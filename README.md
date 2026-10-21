@@ -45,6 +45,35 @@ curl http://localhost:8080/v1/chat/completions \
 
 Endpoints: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz`. Everything else is a 404.
 
+## Architecture
+
+```mermaid
+flowchart LR
+  C["Client<br/>(any OpenAI SDK)"] -- "virtual key" --> A
+
+  subgraph P["Paigate (one process, stdlib only)"]
+    direction LR
+    A["Authenticate<br/>hash lookup"] --> R["Rate limit<br/>token bucket per key"]
+    R --> V["Validate<br/>body cap, model allowlist"]
+    V --> W["Rewrite<br/>public → real model,<br/>client → upstream key"]
+  end
+
+  W -- "1st target" --> U1["vLLM A"]
+  W -. "on 429 / 5xx / conn fail" .-> U2["vLLM B"]
+  W --> L[("stdout JSON log<br/>metadata only")]
+```
+
+Each request goes through four checks in order. The first one that fails ends the request with an OpenAI-shaped error, so SDKs surface it normally. Responses stream back unbuffered, and token usage is read as the response passes through.
+
+| File | Role |
+|---|---|
+| [`cmd/paigate/main.go`](cmd/paigate/main.go) | CLI (`serve`, `check`, `genkey`, `hash`), HTTP server timeouts, graceful shutdown |
+| [`internal/gateway/config.go`](internal/gateway/config.go) | Strict JSON config loading and validation |
+| [`internal/gateway/keys.go`](internal/gateway/keys.go) | Key generation, hashing, token-bucket limiter |
+| [`internal/gateway/gateway.go`](internal/gateway/gateway.go) | Routing, auth, proxying with fallback, SSE relay, usage logging |
+
+State lives in memory only: the parsed config and one rate-limit bucket per key. There is no database and no background job: nothing runs outside the request path.
+
 ## Configuration
 
 One JSON file. See [paigate.example.json](paigate.example.json).
