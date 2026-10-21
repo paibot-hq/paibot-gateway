@@ -1,0 +1,28 @@
+{
+  "listen": ":8080",
+  "max_body_bytes": 10485760,
+  "upstreams": {
+    "vllm-a": { "base_url": "http://vllm-chat-a.inference.svc:8000/v1", "timeout_seconds": 120 },
+    "vllm-b": { "base_url": "http://vllm-chat-b.inference.svc:8000/v1", "timeout_seconds": 120 },
+    "vllm-embed": { "base_url": "http://vllm-embed.inference.svc:8000/v1" }
+  },
+  "models": {
+    "chat": {
+      "targets": [
+        { "upstream": "vllm-a", "model": "Qwen/Qwen3-8B" },
+        { "upstream": "vllm-b", "model": "Qwen/Qwen3-8B" }
+      ]
+    },
+    "embed": {
+      "targets": [{ "upstream": "vllm-embed", "model": "BAAI/bge-m3" }]
+    }
+  },
+  "keys": [
+    {
+      "name": "team-a",
+      "hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "models": ["chat", "embed"],
+      "rpm": 60
+    }
+  ]
+}
