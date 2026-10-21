@@ -31,6 +31,35 @@ curl http://localhost:8080/v1/chat/completions \
 
 対応しているエンドポイント: `POST /v1/chat/completions`、`POST /v1/completions`、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`。それ以外は404を返します。
 
+## アーキテクチャ
+
+```mermaid
+flowchart LR
+  C["クライアント<br/>(OpenAIのSDK)"] -- "仮想キー" --> A
+
+  subgraph P["Paigate(1プロセス、標準ライブラリのみ)"]
+    direction LR
+    A["認証<br/>ハッシュで照合"] --> R["レート制限<br/>キーごとのトークンバケット"]
+    R --> V["検査<br/>本文の上限、モデルの許可"]
+    V --> W["書き換え<br/>公開名 → 実際のモデル名、<br/>利用者のキー → 上流のキー"]
+  end
+
+  W -- "1番目の転送先" --> U1["vLLM A"]
+  W -. "429・5xx・接続失敗のとき" .-> U2["vLLM B"]
+  W --> L[("標準出力のJSONログ<br/>メタデータのみ")]
+```
+
+リクエストは、この4段階を順に通ります。どこかで止まったら、その場でOpenAIと同じ形のエラーを返すので、SDKでは普通のエラーとして扱えます。応答は溜めずにそのまま流し、流れる途中でトークン数を読み取ります。
+
+| ファイル | 役割 |
+|---|---|
+| [`cmd/paigate/main.go`](cmd/paigate/main.go) | コマンド(`serve`、`check`、`genkey`、`hash`)、HTTPサーバーの時間制限、安全な停止 |
+| [`internal/gateway/config.go`](internal/gateway/config.go) | 設定のJSONの読み込みと、厳しめの検査 |
+| [`internal/gateway/keys.go`](internal/gateway/keys.go) | キーの生成とハッシュ、トークンバケットによる制限 |
+| [`internal/gateway/gateway.go`](internal/gateway/gateway.go) | 振り分け、認証、フォールバックつきの転送、SSEの中継、利用の記録 |
+
+状態はメモリの中だけにあります。読み込んだ設定と、キーごとのレート制限のバケットです。データベースも、裏で定期的に動く処理もありません。リクエストの流れの外で、見えない処理が動くことはありません。
+
 ## 設定
 
 [paigate.example.json](paigate.example.json) を参照してください。
