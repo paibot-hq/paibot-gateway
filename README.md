@@ -1,60 +1,75 @@
 # Paigate
 
-小さく、監査しやすい、OpenAI互換のAIゲートウェイです。
-vLLMなど自前ホストのLLMの前に置き、仮想キーでの認証、モデルの許可、レート制限、フォールバック、利用の記録を行います。
+**English** | [日本語](README.ja.md)
 
-- **外部依存ゼロ**: Goの標準ライブラリだけで書いています(`go.sum`がありません)
-- **コードが小さい**: 本体は約850行。全部を読んで承認できます
-- **プロンプトを記録しない**: ログに残るのは、キーの名前、モデル、トークン数、時間などのメタデータだけです
+**An AI gateway small enough to read in one sitting.**
 
-## 使い方
+Paigate sits in front of your self-hosted LLMs (vLLM, SGLang, anything OpenAI-compatible) and does what a gateway should do, and nothing more: it checks virtual keys, enforces per-key model access and rate limits, falls back across upstreams, and records who used what. It never records what they said.
+
+```
+zero dependencies   ·   ~850 lines   ·   no prompts in logs   ·   one static binary
+```
+
+## Why
+
+An AI gateway holds the keys to every model you run, and sees every prompt that passes through. It should be the most boring, most auditable piece of your stack.
+
+Most gateways went the other way: hundreds of transitive dependencies, plugin systems, admin UIs, and dozens of provider integrations. Each one is more code to trust. When that supply chain gets compromised, a gateway is exactly where an attacker wants to be.
+
+Paigate goes the other way:
+
+- **Standard library only.** No `go.sum`. Nothing to pin, vendor, or audit beyond Go itself. CI fails if a dependency ever appears.
+- **Small on purpose.** The whole gateway is about 850 lines. You can review all of it before you approve it.
+- **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
+- **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
+
+## Quick start
 
 ```sh
 go install paibot.app/paigate/cmd/paigate@latest
 
-paigate genkey                 # 仮想キーとハッシュを作る。キーは利用者に一度だけ渡す
-cp paigate.example.json paigate.json   # hash を書き換える
+paigate genkey                          # mint a virtual key; hand it out once, keep only the hash
+cp paigate.example.json paigate.json    # paste the hash in
 paigate check -config paigate.json
 paigate serve -config paigate.json
 ```
 
-クライアントからは、OpenAIのSDKのbase URLを変えるだけで使えます。
+Point any OpenAI SDK at it by changing the base URL:
 
 ```sh
 curl http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer $PAIGATE_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"chat","messages":[{"role":"user","content":"こんにちは"}]}'
+  -d '{"model":"chat","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-対応しているエンドポイント: `POST /v1/chat/completions`、`POST /v1/completions`、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`。それ以外は404を返します。
+Endpoints: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz`. Everything else is a 404.
 
-## 設定
+## Configuration
 
-[paigate.example.json](paigate.example.json) を参照してください。
+One JSON file. See [paigate.example.json](paigate.example.json).
 
-| 項目 | 内容 |
+| Field | What it does |
 |---|---|
-| `upstreams` | 転送先。`base_url`はhttpかhttpsのみ。上流のAPIキーは`api_key_env`で指定した環境変数から読みます |
-| `models` | 公開するモデル名と、転送先の一覧。上から順に試し、429と5xx、接続失敗のときだけ次へ進みます |
-| `keys` | 仮想キー。`hash`(SHA-256)だけを置きます。`models`で使えるモデルを限定し、`rpm`で1分あたりの回数を制限します |
+| `upstreams` | Where requests go. `base_url` must be http or https with no embedded credentials. Upstream API keys come from the environment variable named in `api_key_env`, never from the file. |
+| `models` | Public model names mapped to an ordered list of targets. Paigate moves to the next target only on 429, 5xx, or a connection failure, and only to targets you listed. |
+| `keys` | Virtual keys, stored as SHA-256 hashes. `models` limits what each key may call; `rpm` caps requests per minute. |
 
-設定の書き間違い(知らない項目、存在しない転送先、ハッシュの形式違いなど)は、起動時にエラーになります。
-制限が書き間違いで無効になったまま動く、ということを防ぐためです。
+## Security model
 
-## 安全のための設計
+- **Keys.** 256-bit random keys, stored only as hashes. Lookup is by hash, so comparison timing reveals nothing about a guess.
+- **Clean upstream requests.** Every upstream request is built from scratch. The client's `Authorization`, cookies, and forwarding headers are dropped, and only `Accept` passes through. The upstream's own key is attached server-side.
+- **No redirects.** Upstream redirects are returned as-is, never followed, so an upstream cannot bounce Paigate into your internal network.
+- **No ambient proxies.** `HTTP_PROXY` and friends are ignored.
+- **Bounded input.** Request bodies are size-capped (10 MB by default). Header reads are time-boxed.
+- **No model discovery.** A model that doesn't exist and a model the key can't use return the same 404.
+- **Hardened delivery.** Distroless, non-root container with base images pinned by digest. CI actions are pinned by commit SHA, run with read-only permissions, and get no secrets.
 
-- 仮想キーは256ビットの乱数で、ハッシュだけを保存します。照合はハッシュで行うので、比較時間からキーを推測できません
-- クライアントのヘッダーは転送しません(`Accept`だけは例外)。上流には、新しく作ったリクエストに上流用のキーを付けて送ります
-- 上流からのリダイレクトはたどりません。内部の別のアドレスへ誘導されるのを防ぎます
-- 環境変数のプロキシ設定は使いません
-- 本文の大きさに上限があります(既定は10MB)。ヘッダーの読み込みにも時間の上限があります
-- 存在しないモデルと許可されていないモデルには、同じ404を返します。キーを使って他のモデルを探ることはできません
-- コンテナは、ダイジェストで固定したdistrolessの上で、root以外のユーザーとして動きます。CIのアクションもコミットのSHAで固定しています
+## Not yet
 
-## まだないもの
+- Rate limits are per process. Sharing them across replicas needs Redis.
+- Budgets (token or spend caps) and persisting usage to PostgreSQL.
+- TLS termination. Run Paigate behind your ingress.
+- An admin API. To change keys, edit the config and restart.
 
-- レート制限は各プロセスのメモリ内です。複数のレプリカで共有するにはRedisが必要です
-- 予算(トークン数や金額の上限)と、利用記録のPostgreSQLへの保存
-- TLSの終端(Ingressで行う前提です)
-- 管理API。キーの追加と削除は、設定を書き換えて再起動します
+Small is the feature. Additions will be judged by what they cost to audit.
