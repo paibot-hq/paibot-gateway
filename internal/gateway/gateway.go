@@ -1,7 +1,8 @@
-// Package gateway is a small OpenAI-compatible LLM gateway: it checks a
-// virtual key, applies the key's model allowlist and rate limit, forwards
-// the request to the configured upstreams with ordered fallback, and logs
-// metadata about each request. Prompts and responses are never logged.
+// Package gateway is a small OpenAI- and Anthropic-compatible LLM gateway:
+// it checks a virtual key, applies the key's model allowlist, rate limit,
+// expiry and budget, forwards the request to the configured upstreams with
+// ordered fallback, and logs metadata about each request. Prompts and
+// responses are never logged or stored.
 package gateway
 
 import (
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,21 +35,35 @@ const (
 // defaultAnthropicVersion is sent when an Anthropic client sends none.
 const defaultAnthropicVersion = "2023-06-01"
 
+// Gateway serves the proxy endpoints. Its configuration can be swapped
+// while it runs (Reload). With a database (UseDatabase) it also serves
+// keys created at run time and tracks usage and budgets; see keystore.go.
 type Gateway struct {
-	log       *slog.Logger
+	log     *slog.Logger
+	getenv  func(string) string
+	state   atomic.Pointer[state]
+	db      *dbKeys // nil without a database
+	handler http.Handler
+	now     func() time.Time
+}
+
+// state is everything built from the config file.
+type state struct {
 	maxBody   int64
-	keys      map[string]*virtualKey // by hash
+	keys      map[string]*virtualKey // keys from the config file, by hash
 	models    map[string][]target
 	modelAPI  map[string]string
-	handler   http.Handler
-	now       func() time.Time
 	upstreams map[string]*upstream
 }
 
 type virtualKey struct {
+	id      int64 // database id; 0 for keys from the config file
 	name    string
 	models  map[string]bool
+	rpm     int
 	limiter *limiter
+	budget  int64     // tokens per calendar month; 0 means no cap
+	expires time.Time // zero means never
 }
 
 type upstream struct {
@@ -67,42 +83,12 @@ type target struct {
 // API keys; a referenced variable that is unset or empty is an error, so a
 // missing secret fails at startup instead of on the first request.
 func New(cfg *Config, log *slog.Logger, getenv func(string) string) (*Gateway, error) {
-	g := &Gateway{
-		log:       log,
-		maxBody:   cfg.MaxBodyBytes,
-		keys:      map[string]*virtualKey{},
-		models:    map[string][]target{},
-		modelAPI:  map[string]string{},
-		now:       time.Now,
-		upstreams: map[string]*upstream{},
+	g := &Gateway{log: log, getenv: getenv, now: time.Now}
+	st, err := buildState(cfg, getenv, nil)
+	if err != nil {
+		return nil, err
 	}
-	for name, uc := range cfg.Upstreams {
-		base, err := url.Parse(uc.BaseURL)
-		if err != nil {
-			return nil, err
-		}
-		u := &upstream{name: name, api: uc.API, base: base, client: newClient(time.Duration(uc.TimeoutSeconds) * time.Second)}
-		if uc.APIKeyEnv != "" {
-			u.apiKey = getenv(uc.APIKeyEnv)
-			if u.apiKey == "" {
-				return nil, fmt.Errorf("upstream %q: environment variable %s is not set", name, uc.APIKeyEnv)
-			}
-		}
-		g.upstreams[name] = u
-	}
-	for name, mc := range cfg.Models {
-		for _, t := range mc.Targets {
-			g.models[name] = append(g.models[name], target{up: g.upstreams[t.Upstream], model: t.Model})
-		}
-		g.modelAPI[name] = cfg.Upstreams[mc.Targets[0].Upstream].API
-	}
-	for _, kc := range cfg.Keys {
-		k := &virtualKey{name: kc.Name, models: map[string]bool{}, limiter: newLimiter(kc.RPM)}
-		for _, m := range kc.Models {
-			k.models[m] = true
-		}
-		g.keys[kc.Hash] = k
-	}
+	g.state.Store(st)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +106,73 @@ func New(cfg *Config, log *slog.Logger, getenv func(string) string) (*Gateway, e
 	})
 	g.handler = mux
 	return g, nil
+}
+
+// Reload swaps in a new config while requests keep flowing. Rate-limit
+// buckets of config-file keys whose rpm is unchanged carry over. Settings
+// read only at startup (listen addresses, database, admin UI) are not
+// affected by a reload.
+func (g *Gateway) Reload(cfg *Config) error {
+	old := g.state.Load()
+	st, err := buildState(cfg, g.getenv, old)
+	if err != nil {
+		return err
+	}
+	g.state.Store(st)
+	for _, u := range old.upstreams {
+		u.client.CloseIdleConnections()
+	}
+	return nil
+}
+
+func buildState(cfg *Config, getenv func(string) string, old *state) (*state, error) {
+	st := &state{
+		maxBody:   cfg.MaxBodyBytes,
+		keys:      map[string]*virtualKey{},
+		models:    map[string][]target{},
+		modelAPI:  map[string]string{},
+		upstreams: map[string]*upstream{},
+	}
+	for name, uc := range cfg.Upstreams {
+		base, err := url.Parse(uc.BaseURL)
+		if err != nil {
+			return nil, err
+		}
+		u := &upstream{name: name, api: uc.API, base: base, client: newClient(time.Duration(uc.TimeoutSeconds) * time.Second)}
+		if uc.APIKeyEnv != "" {
+			u.apiKey = getenv(uc.APIKeyEnv)
+			if u.apiKey == "" {
+				return nil, fmt.Errorf("upstream %q: environment variable %s is not set", name, uc.APIKeyEnv)
+			}
+		}
+		st.upstreams[name] = u
+	}
+	for name, mc := range cfg.Models {
+		for _, t := range mc.Targets {
+			st.models[name] = append(st.models[name], target{up: st.upstreams[t.Upstream], model: t.Model})
+		}
+		st.modelAPI[name] = cfg.Upstreams[mc.Targets[0].Upstream].API
+	}
+	for _, kc := range cfg.Keys {
+		k := &virtualKey{name: kc.Name, models: map[string]bool{}, rpm: kc.RPM}
+		if prev := old.fileKey(kc.Hash); prev != nil && prev.rpm == kc.RPM {
+			k.limiter = prev.limiter
+		} else {
+			k.limiter = newLimiter(kc.RPM)
+		}
+		for _, m := range kc.Models {
+			k.models[m] = true
+		}
+		st.keys[kc.Hash] = k
+	}
+	return st, nil
+}
+
+func (st *state) fileKey(hash string) *virtualKey {
+	if st == nil {
+		return nil
+	}
+	return st.keys[hash]
 }
 
 func newClient(headerTimeout time.Duration) *http.Client {
@@ -159,8 +212,9 @@ func newRequestID() string {
 }
 
 // authenticate reads the virtual key from "Authorization: Bearer", or
-// failing that from "x-api-key", which Anthropic clients send.
-func (g *Gateway) authenticate(r *http.Request) *virtualKey {
+// failing that from "x-api-key", which Anthropic clients send. Keys in the
+// config file are looked up first, then keys from the database.
+func (g *Gateway) authenticate(st *state, r *http.Request) *virtualKey {
 	var key string
 	if h := r.Header.Get("Authorization"); h != "" {
 		if len(h) < 7 || !strings.EqualFold(h[:7], "Bearer ") {
@@ -176,12 +230,20 @@ func (g *Gateway) authenticate(r *http.Request) *virtualKey {
 	}
 	// Looking up the hash rather than the key itself means timing cannot
 	// reveal how much of a guessed key was right.
-	return g.keys[HashKey(key)]
+	hash := HashKey(key)
+	if k := st.keys[hash]; k != nil {
+		return k
+	}
+	if g.db != nil {
+		return g.db.lookup(hash)
+	}
+	return nil
 }
 
 func (g *Gateway) listModels(w http.ResponseWriter, r *http.Request) {
-	k := g.authenticate(r)
-	if k == nil {
+	st := g.state.Load()
+	k := g.authenticate(st, r)
+	if k == nil || k.expired(g.now()) {
 		writeError(w, http.StatusUnauthorized, "invalid_api_key", "Invalid API key.")
 		return
 	}
@@ -192,10 +254,16 @@ func (g *Gateway) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	data := []model{}
 	for m := range k.models {
-		data = append(data, model{ID: m, Object: "model", OwnedBy: "paigate"})
+		if st.models[m] != nil { // a database key may name a model since removed
+			data = append(data, model{ID: m, Object: "model", OwnedBy: "paigate"})
+		}
 	}
 	slices.SortFunc(data, func(a, b model) int { return strings.Compare(a.ID, b.ID) })
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
+}
+
+func (k *virtualKey) expired(now time.Time) bool {
+	return !k.expires.IsZero() && !now.Before(k.expires)
 }
 
 // record is what gets logged for each proxied request: metadata only.
@@ -216,17 +284,29 @@ type usage struct {
 // proxy serves one endpoint whose requests are in the format api.
 func (g *Gateway) proxy(api, suffix string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		st := g.state.Load()
 		start := g.now()
 		var rec record
-		defer func() { g.logRecord(r, start, &rec) }()
+		var k *virtualKey
+		defer func() {
+			g.logRecord(r, start, &rec)
+			if k != nil && k.id != 0 && rec.attempts > 0 {
+				g.db.record(k.id, rec.model, start, rec.usage)
+			}
+		}()
 
-		k := g.authenticate(r)
+		k = g.authenticate(st, r)
 		if k == nil {
 			rec.status = http.StatusUnauthorized
 			writeAPIError(w, api, rec.status, "invalid_api_key", "Invalid API key.")
 			return
 		}
 		rec.key = k.name
+		if k.expired(start) {
+			rec.status = http.StatusUnauthorized
+			writeAPIError(w, api, rec.status, "invalid_api_key", "This API key has expired.")
+			return
+		}
 
 		if ok, wait := k.limiter.allow(start); !ok {
 			rec.status = http.StatusTooManyRequests
@@ -234,8 +314,15 @@ func (g *Gateway) proxy(api, suffix string) http.HandlerFunc {
 			writeAPIError(w, api, rec.status, "rate_limit_exceeded", "Rate limit exceeded for this key.")
 			return
 		}
+		// The budget is checked before the request, so one request may run
+		// past it; the next one is refused.
+		if k.budget > 0 && g.db.tokensUsed(k.id, start) >= k.budget {
+			rec.status = http.StatusTooManyRequests
+			writeAPIError(w, api, rec.status, "insufficient_quota", "This API key has used up its monthly token budget.")
+			return
+		}
 
-		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, g.maxBody))
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, st.maxBody))
 		if err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
@@ -262,19 +349,19 @@ func (g *Gateway) proxy(api, suffix string) http.HandlerFunc {
 		rec.model = model
 		// Same answer whether the model does not exist or the key may not
 		// use it, so a key cannot be used to discover other models.
-		if !k.models[model] {
+		targets := st.models[model]
+		if !k.models[model] || targets == nil {
 			rec.status = http.StatusNotFound
 			writeAPIError(w, api, rec.status, "model_not_found", fmt.Sprintf("The model %q does not exist or you do not have access to it.", model))
 			return
 		}
-		if g.modelAPI[model] != api {
+		if st.modelAPI[model] != api {
 			rec.status = http.StatusBadRequest
 			writeAPIError(w, api, rec.status, "invalid_request", fmt.Sprintf("The model %q is not served on this endpoint.", model))
 			return
 		}
 		json.Unmarshal(req["stream"], &rec.stream)
 
-		targets := g.models[model]
 		for i, t := range targets {
 			rec.attempts++
 			rec.upstream, rec.targetModel = t.up.name, t.model
@@ -288,7 +375,7 @@ func (g *Gateway) proxy(api, suffix string) http.HandlerFunc {
 			resp, err := t.up.send(r.Context(), suffix, out, r.Header)
 			if err != nil {
 				if r.Context().Err() != nil {
-					rec.err = "client canceled"
+					rec.err = "client closed the connection"
 					return
 				}
 				rec.err = err.Error()
@@ -304,7 +391,13 @@ func (g *Gateway) proxy(api, suffix string) http.HandlerFunc {
 			rec.status = resp.StatusCode
 			rec.usage, err = relay(w, resp, api)
 			if err != nil {
-				rec.err = err.Error()
+				// Many SDKs hang up as soon as they read the end of a stream,
+				// before the upstream closes it; that is not a failure.
+				if r.Context().Err() != nil {
+					rec.err = "client closed the connection"
+				} else {
+					rec.err = err.Error()
+				}
 			}
 			return
 		}
