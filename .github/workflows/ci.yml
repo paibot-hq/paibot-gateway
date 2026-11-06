@@ -12,6 +12,21 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A real PostgreSQL for the database tests, pinned by digest like the
+    # other images. Without PG_TEST_DSN those tests skip.
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+        env:
+          POSTGRES_USER: paigate
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: paigate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U paigate"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      PG_TEST_DSN: postgres://paigate:ci-only-password@localhost:5432/paigate?sslmode=disable
     steps:
       # Actions are pinned by commit SHA, not by tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,7 +38,7 @@ jobs:
           cache: false
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
-      - run: go test -race ./...
+      - run: go test -race -p 1 ./...
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: no third-party dependencies

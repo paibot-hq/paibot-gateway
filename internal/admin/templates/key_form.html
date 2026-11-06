@@ -1,0 +1,45 @@
+{{define "title"}}{{if .New}}New key{{else}}Edit {{.Form.Name}}{{end}}{{end}}
+{{define "content"}}
+<p class="crumb"><a href="/">← Keys</a></p>
+<section class="card">
+  <h1>{{if .New}}New key{{else}}Edit {{.Form.Name}}{{end}}</h1>
+  {{with .Error}}<p class="alert error" role="alert">{{.}}</p>{{end}}
+  <form method="post" action="{{if .New}}/keys/new{{else}}/keys/{{.Form.Name}}{{end}}" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    {{if .New}}
+    <label><span>Name</span>
+      <input name="name" value="{{.Form.Name}}" required pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" maxlength="64" spellcheck="false" placeholder="tanaka">
+      <span class="hint">Letters, digits, dots, underscores and hyphens. It names the key in logs and reports.</span>
+    </label>
+    {{end}}
+    <label><span>Owner <span class="optional">optional</span></span>
+      <input name="owner" value="{{.Form.Owner}}" maxlength="200" placeholder="tanaka@example.com">
+    </label>
+    <fieldset>
+      <legend>Models</legend>
+      {{if .AllModels}}
+      <div class="checks">
+        {{range .AllModels}}<label class="check"><input type="checkbox" name="models" value="{{.}}"{{if has $.Form.Models .}} checked{{end}}> {{.}}</label>{{end}}
+      </div>
+      {{else}}<p class="muted">The config file defines no models yet.</p>{{end}}
+    </fieldset>
+    <div class="row">
+      <label><span>Requests per minute <span class="optional">optional</span></span>
+        <input name="rpm" value="{{.Form.RPM}}" inputmode="numeric" placeholder="no limit">
+      </label>
+      <label><span>Monthly token budget <span class="optional">optional</span></span>
+        <input name="budget" value="{{.Form.Budget}}" inputmode="numeric" placeholder="no budget">
+        <span class="hint">Prompt plus completion tokens per calendar month.</span>
+      </label>
+      <label><span>Valid through <span class="optional">optional</span></span>
+        <input type="date" name="expires" value="{{.Form.Expires}}">
+        <span class="hint">The last day the key works. Blank for no expiry.</span>
+      </label>
+    </div>
+    <div class="buttons">
+      <button class="primary">{{if .New}}Create key{{else}}Save{{end}}</button>
+      <a class="button" href="/">Cancel</a>
+    </div>
+  </form>
+</section>
+{{end}}

@@ -1,0 +1,49 @@
+{{define "title"}}Keys{{end}}
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <h1>Keys</h1>
+    <p class="muted">{{.Active}} active · usage for {{.Month}}</p>
+  </div>
+  <a class="button primary" href="/keys/new">New key</a>
+</div>
+{{with .Notice}}<p class="alert ok" role="status">{{.}}</p>{{end}}
+{{if .Keys}}
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Name</th><th>Models</th><th class="num">Requests/min</th><th>This month</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {{range .Keys}}
+  <tr class="{{.Status}}">
+    <td><strong>{{.Name}}</strong>{{with .Owner}}<div class="muted small">{{.}}</div>{{end}}</td>
+    <td>{{range .Models}}<span class="chip">{{.}}</span>{{end}}</td>
+    <td class="num">{{if .RPM}}{{.RPM}}{{else}}<span class="muted">no limit</span>{{end}}</td>
+    <td class="usage">
+      {{comma .Used}}{{if .MonthlyTokenBudget}} <span class="muted">/ {{comma .MonthlyTokenBudget}}</span>
+      <div class="bar{{if ge .Percent 100}} full{{else if ge .Percent 80}} high{{end}}" role="img" aria-label="{{.Percent}}% of budget"><span class="w{{step5 .Percent}}"></span></div>
+      {{else}} <span class="muted small">tokens, no budget</span>{{end}}
+    </td>
+    <td>{{if .Expires}}{{.Expires}}{{else}}<span class="muted">never</span>{{end}}</td>
+    <td><span class="badge {{.Status}}">{{.Status}}</span></td>
+    <td class="actions">
+      {{if eq .Status "revoked"}}{{else}}
+      <a href="/keys/{{.Name}}">Edit</a>
+      <form method="post" action="/keys/{{.Name}}/revoke" data-confirm="Revoke {{.Name}}? Anyone using it is cut off within a few seconds. This cannot be undone.">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}"><button class="linklike danger">Revoke</button>
+      </form>
+      {{end}}
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+<p class="muted small">Keys written in the config file work too but are not listed here.</p>
+{{else}}
+<section class="card empty">
+  <h2>No keys yet</h2>
+  <p class="muted">Create a key for each person or service that should use the gateway.</p>
+  <a class="button primary" href="/keys/new">Create the first key</a>
+</section>
+{{end}}
+{{end}}

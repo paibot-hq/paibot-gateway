@@ -1,0 +1,30 @@
+{{define "title"}}Usage{{end}}
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <h1>Usage</h1>
+    <p class="muted">{{.Month}} · months begin in {{.Zone}}</p>
+  </div>
+  <div class="pager">
+    <a class="button" href="/usage?month={{.Prev}}">← Earlier</a>
+    {{with .Next}}<a class="button" href="/usage?month={{.}}">Later →</a>{{end}}
+  </div>
+</div>
+{{if .Rows}}
+<div class="tablewrap">
+<table>
+  <thead><tr><th>Key</th><th>Model</th><th class="num">Requests</th><th class="num">Prompt tokens</th><th class="num">Completion tokens</th><th class="num">Total tokens</th></tr></thead>
+  <tbody>
+  {{range .Rows}}
+  <tr><td><strong>{{.Key}}</strong>{{with .Owner}}<div class="muted small">{{.}}</div>{{end}}</td><td><span class="chip">{{.Model}}</span></td>
+    <td class="num">{{comma .Requests}}</td><td class="num">{{comma .PromptTokens}}</td><td class="num">{{comma .CompletionTokens}}</td><td class="num"><strong>{{comma .Total}}</strong></td></tr>
+  {{end}}
+  </tbody>
+  <tfoot><tr><td colspan="2">All keys</td><td class="num">{{comma .Total.Requests}}</td><td class="num">{{comma .Total.PromptTokens}}</td><td class="num">{{comma .Total.CompletionTokens}}</td><td class="num">{{comma .Total.Total}}</td></tr></tfoot>
+</table>
+</div>
+<p class="muted small">Totals cover keys stored in the database. Paigate records counts per key, model and hour, never prompts or responses.</p>
+{{else}}
+<section class="card empty"><h2>No usage in {{.Month}}</h2><p class="muted">Requests made with database keys show up here within a few seconds.</p></section>
+{{end}}
+{{end}}

@@ -156,3 +156,26 @@ func TestMonthStart(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+func TestExpiryDates(t *testing.T) {
+	jst := time.FixedZone("JST", 9*3600)
+	exp, err := ParseExpiry("2027-03-31", jst)
+	if err != nil || !exp.Equal(time.Date(2027, 4, 1, 0, 0, 0, 0, jst)) {
+		t.Fatalf("%v %v", exp, err)
+	}
+	if got := FormatExpiry(exp, jst); got != "2027-03-31" {
+		t.Errorf("format %q", got)
+	}
+	if exp, err := ParseExpiry("never", jst); exp != nil || err != nil {
+		t.Errorf("never: %v %v", exp, err)
+	}
+	if _, err := ParseExpiry("31/03/2027", jst); err == nil {
+		t.Error("accepted a bad date")
+	}
+	if n, err := ParseTokens("1,000,000"); n != 1_000_000 || err != nil {
+		t.Errorf("tokens %d %v", n, err)
+	}
+	if _, err := ParseTokens("-5"); err == nil {
+		t.Error("accepted a negative budget")
+	}
+}

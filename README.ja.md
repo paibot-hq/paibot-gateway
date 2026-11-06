@@ -6,8 +6,8 @@
 vLLMなど自前ホストのLLMの前に置き、仮想キーでの認証、モデルの許可、レート制限、フォールバック、利用の記録を行います。
 
 - **外部依存ゼロ**: Goの標準ライブラリだけで書いています(`go.sum`がありません)
-- **コードが小さい**: 本体は約1,000行。全部を読んで承認できます
-- **プロンプトを記録しない**: ログに残るのは、キーの名前、モデル、トークン数、時間などのメタデータだけです
+- **コードが小さい**: ゲートウェイ本体は約1,300行です。必要なときだけ使うDB、PostgreSQLのクライアント、管理画面を含めても約3,600行です。全部を読んで承認できます
+- **プロンプトを記録しない**: ログとDBに残るのは、キーの名前、モデル、トークン数、時間などのメタデータだけです
 
 ## 使い方
 
@@ -51,6 +51,38 @@ client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
 
 リクエストは形式を変換せず、そのまま中継します。そのため、Anthropicの新しい機能もPaigateを直さずに使えます。同じ理由で、1つのモデルの転送先はすべて同じ `api` にそろえる必要があります。また、AnthropicのモデルをOpenAIのエンドポイントで呼ぶことはできず、その逆もできません。このエンドポイントのエラーはAnthropicと同じ形で返します。529(混雑)のときは、5xxと同じく次の転送先に進みます。ログの `prompt_tokens` には、OpenAIと同じくキャッシュから読んだ入力も含めます。
 
+### キーをDBに置く、利用量と予算
+
+DBなしの場合、キーは設定ファイルに書きます。キーを変えたら`SIGHUP`(`kill -HUP <pid>`)を送ると、リクエストを止めずに設定を読み直します。PostgreSQLを使うと、動かしたままキーを発行・無効化でき、キーごとの利用量の記録と、月ごとのトークン数の予算が使えます。
+
+```json
+"database_url_env": "PAIGATE_DATABASE_URL",
+"timezone": "Asia/Tokyo"
+```
+
+```sh
+export PAIGATE_DATABASE_URL='postgres://paigate:secret@db.internal/paigate'   # 既定はsslmode=verify-full
+paigate db migrate
+paigate key create -name tanaka -owner tanaka@example.com -models chat,sonnet -rpm 60 -budget 2000000 -expires 2027-03-31
+paigate key list
+paigate key revoke -name tanaka
+paigate usage -month 2026-11
+```
+
+キーは発行したときに一度だけ表示し、保存するのはハッシュだけです。Paigateは5秒ごとにキーを読み直すので、無効にしたキーは5秒以内に使えなくなります。リクエストの処理中にDBを待つことはありません。キーはメモリから引き、利用量もメモリで合計してからまとめて書き込みます。DBが止まっても、最後に読んだキーで動き続け、利用量はDBが戻ってから書き込みます。`timezone`は、月の区切り(予算と利用量の集計の区切り)を決めます。
+
+DBに入るのは、キーと、キー×モデル×1時間ごとのリクエスト数とトークン数だけです。プロンプト、応答、1件ずつのリクエストの記録は入りません。PostgreSQLのクライアントもPaigateの一部で、標準ライブラリだけで書いています。TLSでの証明書の確認、SCRAM-SHA-256の認証、パラメータ付きのクエリに対応しています。
+
+### 管理画面
+
+`admin_token_env`も設定すると、キーと利用量を扱う小さな管理画面が使えます。既定の待ち受けは`127.0.0.1:8081`で、そのマシンの中からしか開けません(`ssh -L`や`kubectl port-forward`でつなぐか、`admin_listen`を変えます)。トークンは`paigate genkey`で作ってください。
+
+```json
+"admin_token_env": "PAIGATE_ADMIN_TOKEN"
+```
+
+管理者のアカウントやパスワードはなく、トークンでログインします。画面はサーバー側で作り、厳しいContent-Security-Policyを付けています。フォームは別サイトからの送信を防ぎ、ログインの失敗が続くと待たせます。
+
 ## アーキテクチャ
 
 ```mermaid
@@ -77,8 +109,12 @@ flowchart LR
 | [`internal/gateway/config.go`](internal/gateway/config.go) | 設定のJSONの読み込みと、厳しめの検査 |
 | [`internal/gateway/keys.go`](internal/gateway/keys.go) | キーの生成とハッシュ、トークンバケットによる制限 |
 | [`internal/gateway/gateway.go`](internal/gateway/gateway.go) | 振り分け、認証、フォールバックつきの転送、SSEの中継、利用の記録 |
+| [`internal/gateway/keystore.go`](internal/gateway/keystore.go) | DBのキーをメモリに持つ、利用量のまとめ書き、予算 |
+| [`internal/store/store.go`](internal/store/store.go) | キーと1時間ごとの利用量の表とクエリ |
+| [`internal/pg/`](internal/pg/) | PostgreSQLの通信。TLS、SCRAM-SHA-256、クエリ、小さな接続プール |
+| [`internal/admin/`](internal/admin/) | 管理画面。ログイン、キー、利用量 |
 
-状態はメモリの中だけにあります。読み込んだ設定と、キーごとのレート制限のバケットです。データベースも、裏で定期的に動く処理もありません。リクエストの流れの外で、見えない処理が動くことはありません。
+DBなしの場合、状態はメモリの中だけにあります。読み込んだ設定と、キーごとのレート制限のバケットです。DBを使う場合は、5秒ごとにキーを読み直して利用量を書き込む処理が裏で動きます。リクエストの処理がそれを待つことはありません。
 
 ## 設定
 
@@ -89,6 +125,9 @@ flowchart LR
 | `upstreams` | 転送先。`base_url`はhttpかhttpsのみ。上流のAPIキーは`api_key_env`で指定した環境変数から読みます。`api`は`openai`(既定)か`anthropic` |
 | `models` | 公開するモデル名と、転送先の一覧。上から順に試し、429と5xx、接続失敗のときだけ次へ進みます |
 | `keys` | 仮想キー。`hash`(SHA-256)だけを置きます。`models`で使えるモデルを限定し、`rpm`で1分あたりの回数を制限します |
+| `database_url_env` | 任意。キー、利用量、予算に使う`postgres://`のURLを入れた環境変数の名前 |
+| `admin_token_env`、`admin_listen` | 任意。管理画面を使うときに設定します。DBが必要です |
+| `timezone` | 予算と利用量の集計で、月の区切りに使うタイムゾーン。既定は`UTC` |
 
 設定の書き間違い(知らない項目、存在しない転送先、ハッシュの形式違いなど)は、起動時にエラーになります。
 制限が書き間違いで無効になったまま動く、ということを防ぐためです。
@@ -105,7 +144,7 @@ flowchart LR
 
 ## まだないもの
 
-- レート制限は各プロセスのメモリ内です。複数のレプリカで共有するにはRedisが必要です
-- 予算(トークン数や金額の上限)と、利用記録のPostgreSQLへの保存
+- レート制限は各プロセスのメモリ内です。予算はDBで共有しますが、複数のレプリカでは数秒分の利用だけ超えることがあります
+- 金額での上限と、チーム。予算はキーごとのトークン数です
+- SSOでの管理画面へのログインと、複数の管理者
 - TLSの終端(Ingressで行う前提です)
-- 管理API。キーの追加と削除は、設定を書き換えて再起動します
