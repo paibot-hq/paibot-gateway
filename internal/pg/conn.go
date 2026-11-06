@@ -30,6 +30,8 @@ type Config struct {
 	// TLS is nil only when the URL says sslmode=disable.
 	TLS            *tls.Config
 	ConnectTimeout time.Duration
+	// ApplicationName shows in pg_stat_activity; "paigate" if empty.
+	ApplicationName string
 }
 
 // ParseURL reads postgres://user:password@host:port/database?sslmode=...
@@ -144,6 +146,12 @@ func Connect(ctx context.Context, cfg *Config) (*Conn, error) {
 }
 
 func handshake(ctx context.Context, nc net.Conn, cfg *Config) (*Conn, error) {
+	if !printableASCII(cfg.Password) {
+		// PostgreSQL normalizes non-ASCII passwords (SASLprep) before
+		// hashing them, which needs Unicode tables the standard library
+		// lacks. Fail clearly instead of with a puzzling auth error.
+		return nil, errors.New("pg: the password must use printable ASCII characters only")
+	}
 	if cfg.TLS != nil {
 		// SSLRequest. The one-byte answer is read straight from the socket,
 		// with no buffering, so nothing sent before the TLS handshake can be
@@ -172,7 +180,11 @@ func handshake(ctx context.Context, nc net.Conn, cfg *Config) (*Conn, error) {
 	var b buffer
 	b.int32(0) // length, filled in below
 	b.int32(196608)
-	for _, kv := range [][2]string{{"user", cfg.User}, {"database", cfg.Database}, {"application_name", "paigate"}, {"client_encoding", "UTF8"}} {
+	app := cfg.ApplicationName
+	if app == "" {
+		app = "paigate"
+	}
+	for _, kv := range [][2]string{{"user", cfg.User}, {"database", cfg.Database}, {"application_name", app}, {"client_encoding", "UTF8"}} {
 		b.cstring(kv[0])
 		b.cstring(kv[1])
 	}
@@ -250,6 +262,15 @@ func (c *Conn) authenticate(cfg *Config) error {
 			return fmt.Errorf("pg: server asked for authentication method %d; only scram-sha-256 is supported", code)
 		}
 	}
+}
+
+func printableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func hasMechanism(list []byte, want string) bool {

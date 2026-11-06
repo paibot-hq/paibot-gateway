@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -257,4 +259,84 @@ func TestPostgresTLS(t *testing.T) {
 
 func tlsConfigFor(host string) *tls.Config {
 	return &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12}
+}
+
+func TestRejectsNonASCIIPassword(t *testing.T) {
+	cfg := fakeServer(t, func(c net.Conn) { readStartup(c) })
+	cfg.Password = "ｐａｓｓ"
+	if _, err := Connect(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "ASCII") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPool(t *testing.T) {
+	dsn := os.Getenv("PG_TEST_DSN")
+	if dsn == "" {
+		t.Skip("PG_TEST_DSN not set")
+	}
+	cfg, _ := ParseURL(dsn)
+	cfg.ApplicationName = "paigate-pool-test"
+	p := NewPool(cfg, 3)
+	defer p.Close()
+	ctx := context.Background()
+
+	// 30 concurrent queries share at most 3 connections.
+	var wg sync.WaitGroup
+	errs := make(chan error, 30)
+	for range 30 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := p.Query(ctx, `SELECT pg_sleep(0.02)`); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	rows, err := p.Query(ctx, `SELECT count(*) FROM pg_stat_activity WHERE application_name = $1`, cfg.ApplicationName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := strconv.Atoi(*rows.Values[0][0]); n < 1 || n > 3 {
+		t.Errorf("%d connections open, want 1..3", n)
+	}
+
+	// A connection killed by the server is dropped, and the pool recovers.
+	if _, err := p.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1 AND pid <> pg_backend_pid()`, cfg.ApplicationName); err != nil {
+		t.Fatal(err)
+	}
+	ok := 0
+	for range 6 {
+		if _, err := p.Query(ctx, `SELECT 1`); err == nil {
+			ok++
+		}
+	}
+	if ok < 4 {
+		t.Errorf("only %d of 6 queries succeeded after connections were killed", ok)
+	}
+	if _, err := p.Query(ctx, `SELECT 1`); err != nil {
+		t.Errorf("pool did not recover: %v", err)
+	}
+
+	// A waiter gives up when its context ends.
+	held := make([]*Conn, 0, 3)
+	for range 3 {
+		c, err := p.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		held = append(held, c)
+	}
+	tctx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if _, err := p.Acquire(tctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("full pool: err = %v", err)
+	}
+	for _, c := range held {
+		p.Release(c)
+	}
 }
