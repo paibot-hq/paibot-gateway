@@ -62,9 +62,22 @@ type ReportRow struct {
 	Requests, PromptTokens, CompletionTokens int64
 }
 
+// InputError is a problem with what was asked for, as opposed to a
+// failure of the database; it is safe to show to whoever asked.
+type InputError struct{ msg string }
+
+func (e *InputError) Error() string { return e.msg }
+
+// Input makes an InputError.
+func Input(msg string) error { return &InputError{msg} }
+
+func inputError(format string, args ...any) error {
+	return &InputError{fmt.Sprintf(format, args...)}
+}
+
 var (
 	ErrNotFound = errors.New("no such key")
-	ErrExists   = errors.New("a key with that name already exists")
+	ErrExists   = &InputError{"a key with that name already exists"}
 )
 
 var validName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -77,13 +90,13 @@ func ValidName(name string) bool { return validName.MatchString(name) }
 func (s *KeySettings) Validate() error {
 	switch {
 	case len(s.Owner) > 200:
-		return errors.New("owner must be at most 200 characters")
+		return inputError("owner must be at most 200 characters")
 	case len(s.Models) == 0:
-		return errors.New("at least one model is required")
+		return inputError("at least one model is required")
 	case s.RPM < 0:
-		return errors.New("rpm must not be negative")
+		return inputError("rpm must not be negative")
 	case s.MonthlyTokenBudget < 0:
-		return errors.New("the monthly token budget must not be negative")
+		return inputError("the monthly token budget must not be negative")
 	}
 	return nil
 }
@@ -270,7 +283,7 @@ func budget(n int64) any {
 // CreateKey stores a new key under name with the given hash.
 func (s *Store) CreateKey(ctx context.Context, name, hash string, set KeySettings) (Key, error) {
 	if !ValidName(name) {
-		return Key{}, errors.New("the name must be 1 to 64 letters, digits, dots, underscores or hyphens")
+		return Key{}, inputError("the name must be 1 to 64 letters, digits, dots, underscores or hyphens, starting with a letter or digit")
 	}
 	if err := set.Validate(); err != nil {
 		return Key{}, err
@@ -386,4 +399,42 @@ func (s *Store) Report(ctx context.Context, from, to time.Time) ([]ReportRow, er
 func MonthStart(t time.Time, loc *time.Location) time.Time {
 	t = t.In(loc)
 	return time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, loc)
+}
+
+// ParseExpiry reads a date "2006-01-02" as "valid through that day" in
+// loc, so the key expires when the next day begins. "" and "never" mean
+// no expiry.
+func ParseExpiry(date string, loc *time.Location) (*time.Time, error) {
+	date = strings.TrimSpace(date)
+	if date == "" || date == "never" {
+		return nil, nil
+	}
+	d, err := time.ParseInLocation("2006-01-02", date, loc)
+	if err != nil {
+		return nil, inputError("the expiry must be a date like 2027-03-31")
+	}
+	t := d.AddDate(0, 0, 1)
+	return &t, nil
+}
+
+// FormatExpiry is the last day a key is valid, the inverse of ParseExpiry.
+func FormatExpiry(t *time.Time, loc *time.Location) string {
+	if t == nil {
+		return ""
+	}
+	return t.Add(-time.Nanosecond).In(loc).Format("2006-01-02")
+}
+
+// ParseTokens reads a token count such as "1000000" or "1,000,000".
+// "" means no budget.
+func ParseTokens(s string) (int64, error) {
+	s = strings.NewReplacer(",", "", "_", "", " ", "").Replace(s)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return 0, inputError("the budget must be a whole number of tokens")
+	}
+	return n, nil
 }

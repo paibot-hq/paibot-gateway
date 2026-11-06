@@ -7,7 +7,7 @@
 Paigate sits in front of your self-hosted LLMs (vLLM, SGLang, anything OpenAI-compatible) and does what a gateway should do, and nothing more: it checks virtual keys, enforces per-key model access and rate limits, falls back across upstreams, and records who used what. It never records what they said.
 
 ```
-zero dependencies   ·   ~1,000 lines   ·   no prompts in logs   ·   one static binary
+zero dependencies   ·   no prompts in logs or the database   ·   one static binary
 ```
 
 ## Why
@@ -19,7 +19,7 @@ Most gateways went the other way: hundreds of transitive dependencies, plugin sy
 Paigate goes the other way:
 
 - **Standard library only.** No `go.sum`. Nothing to pin, vendor, or audit beyond Go itself. CI fails if a dependency ever appears.
-- **Small on purpose.** The whole gateway is about 1,000 lines. You can review all of it before you approve it.
+- **Small on purpose.** The gateway itself is about 1,300 lines of Go; the optional database layer, PostgreSQL client and admin UI bring the total to about 3,600. You can review all of it before you approve it.
 - **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
 - **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
 
@@ -65,6 +65,38 @@ client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
 
 Requests are passed through in their own format, never translated, so new Anthropic features work without changes to Paigate. That is also why a model's targets must all use the same `api`, and why an Anthropic model is refused on the OpenAI endpoints and the other way round. Errors on these endpoints come back in Anthropic's shape, and a 529 (overloaded) moves on to the next target like a 5xx. Logged `prompt_tokens` include cached input, as OpenAI's do.
 
+### Keys in a database, usage and budgets
+
+Without a database, keys live in the config file and changing them means editing it and sending `SIGHUP` (`kill -HUP <pid>`), which reloads the file without dropping a request. With PostgreSQL, keys can be created and revoked at run time, and Paigate tracks usage and enforces a monthly token budget per key:
+
+```json
+"database_url_env": "PAIGATE_DATABASE_URL",
+"timezone": "Asia/Tokyo"
+```
+
+```sh
+export PAIGATE_DATABASE_URL='postgres://paigate:secret@db.internal/paigate'   # sslmode=verify-full is the default
+paigate db migrate
+paigate key create -name tanaka -owner tanaka@example.com -models chat,sonnet -rpm 60 -budget 2000000 -expires 2027-03-31
+paigate key list
+paigate key revoke -name tanaka
+paigate usage -month 2026-11
+```
+
+The key is printed once and only its hash is stored. Paigate reloads keys every 5 seconds, so a revoked key stops working within that time, and requests never wait on the database: keys are served from memory, and usage is summed in memory and written in batches. If the database goes away, the last keys loaded keep working and usage is written once it is back. `timezone` decides where calendar months, and so budgets, begin.
+
+The database holds keys and one row per key, model and hour with request and token counts. It never holds prompts, responses, or a record of individual requests. The PostgreSQL client is part of Paigate and, like the rest, uses only the standard library: TLS with certificate checks, SCRAM-SHA-256 authentication, parameterized queries.
+
+### Admin UI
+
+Set `admin_token_env` as well and Paigate serves a small web UI for keys and usage, by default on `127.0.0.1:8081`, reachable only from the machine itself (use `ssh -L` or `kubectl port-forward`, or set `admin_listen`). Make the token with `paigate genkey`.
+
+```json
+"admin_token_env": "PAIGATE_ADMIN_TOKEN"
+```
+
+There are no admin accounts or passwords: signing in takes the token. Pages are rendered on the server with a strict Content-Security-Policy, forms are protected against cross-site requests, and failed sign-ins are throttled.
+
 ## Architecture
 
 ```mermaid
@@ -87,12 +119,16 @@ Each request goes through four checks in order. The first one that fails ends th
 
 | File | Role |
 |---|---|
-| [`cmd/paigate/main.go`](cmd/paigate/main.go) | CLI (`serve`, `check`, `genkey`, `hash`), HTTP server timeouts, graceful shutdown |
+| [`cmd/paigate/main.go`](cmd/paigate/main.go) | CLI, HTTP server timeouts, SIGHUP reload, graceful shutdown |
 | [`internal/gateway/config.go`](internal/gateway/config.go) | Strict JSON config loading and validation |
 | [`internal/gateway/keys.go`](internal/gateway/keys.go) | Key generation, hashing, token-bucket limiter |
 | [`internal/gateway/gateway.go`](internal/gateway/gateway.go) | Routing, auth, proxying with fallback, SSE relay, usage logging |
+| [`internal/gateway/keystore.go`](internal/gateway/keystore.go) | Database keys in memory, usage batching, budgets |
+| [`internal/store/store.go`](internal/store/store.go) | Tables and queries for keys and hourly usage |
+| [`internal/pg/`](internal/pg/) | PostgreSQL wire protocol: TLS, SCRAM-SHA-256, queries, a small pool |
+| [`internal/admin/`](internal/admin/) | Admin UI: sign-in, keys, usage |
 
-State lives in memory only: the parsed config and one rate-limit bucket per key. There is no database and no background job: nothing runs outside the request path.
+Without a database, state lives in memory only: the parsed config and one rate-limit bucket per key. With one, a background loop reloads keys and writes usage every 5 seconds; nothing in the request path waits on it.
 
 ## Configuration
 
@@ -103,6 +139,9 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 | `upstreams` | Where requests go. `base_url` must be http or https with no embedded credentials. Upstream API keys come from the environment variable named in `api_key_env`, never from the file. `api` is `openai` (the default) or `anthropic`. |
 | `models` | Public model names mapped to an ordered list of targets. Paigate moves to the next target only on 429, 5xx, or a connection failure, and only to targets you listed. |
 | `keys` | Virtual keys, stored as SHA-256 hashes. `models` limits what each key may call; `rpm` caps requests per minute. |
+| `database_url_env` | Optional. The environment variable holding a `postgres://` URL for keys, usage and budgets. |
+| `admin_token_env`, `admin_listen` | Optional. Turn on the admin UI; it needs the database. |
+| `timezone` | Where months begin for budgets and usage reports. Default `UTC`. |
 
 ## Security model
 
@@ -116,9 +155,9 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 
 ## Not yet
 
-- Rate limits are per process. Sharing them across replicas needs Redis.
-- Budgets (token or spend caps) and persisting usage to PostgreSQL.
+- Rate limits are per process. Budgets are shared through the database, but may run over by up to a few seconds of traffic across replicas.
+- Spend caps in money, and teams. Budgets are in tokens, per key.
+- Signing in to the admin UI through SSO, and more than one administrator.
 - TLS termination. Run Paigate behind your ingress.
-- An admin API. To change keys, edit the config and restart.
 
 Small is the feature. Additions will be judged by what they cost to audit.

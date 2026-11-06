@@ -1,0 +1,19 @@
+{{define "title"}}Key created{{end}}
+{{define "content"}}
+<section class="card">
+  <h1>Key created for {{.Name}}</h1>
+  <p class="alert warn" role="status"><strong>Copy it now.</strong> This is the only time the key is shown. Paigate keeps only its hash.</p>
+  <p class="muted">The gateway starts accepting it within a few seconds.</p>
+  <div class="secret">
+    <code id="newkey">{{.Key}}</code>
+    <button type="button" data-copy="newkey">Copy</button>
+  </div>
+  <h2>Try it</h2>
+  <pre><code>curl http://YOUR-GATEWAY:8080/v1/chat/completions \
+  -H "Authorization: Bearer {{.Key}}" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"{{.Model}}","messages":[{"role":"user","content":"Hello"}]}'</code></pre>
+  <p class="muted small">Any OpenAI SDK works by setting its base URL to the gateway and its API key to this key. Anthropic SDKs work the same way for Anthropic-format models.</p>
+  <div class="buttons"><a class="button primary" href="/">Done</a></div>
+</section>
+{{end}}
