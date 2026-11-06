@@ -118,7 +118,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Security-Policy", "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Referrer-Policy", "no-referrer")
+	h.Set("Referrer-Policy", "same-origin")
 	h.Set("Cache-Control", "no-store")
 	s.mux.ServeHTTP(w, r)
 }
@@ -166,11 +166,12 @@ func (s *Server) session(r *http.Request) *session {
 }
 
 // sameOrigin rejects cross-site form posts. Browsers send Sec-Fetch-Site
-// and Origin on POSTs; a request without either did not come from a
+// on POSTs and a page cannot forge it, so it decides when present. Older
+// browsers send only Origin. A request with neither did not come from a
 // browser page on another site.
 func sameOrigin(r *http.Request) bool {
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
-		return false
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		return site == "same-origin"
 	}
 	if o := r.Header.Get("Origin"); o != "" {
 		u, err := url.Parse(o)

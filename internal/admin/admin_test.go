@@ -189,9 +189,9 @@ func (c *client) post(path string, form url.Values, header ...string) (int, stri
 	return resp.StatusCode, string(b), resp.Header
 }
 
-func (c *client) signIn() {
+func (c *client) signIn(header ...string) {
 	c.t.Helper()
-	if code, body, _ := c.post("/login", url.Values{"token": {adminToken}}); code != 303 {
+	if code, body, _ := c.post("/login", url.Values{"token": {adminToken}}, header...); code != 303 {
 		c.t.Fatalf("sign in: %d %s", code, body)
 	}
 	c.get("/") // picks up the CSRF token
@@ -257,8 +257,21 @@ func TestCSRF(t *testing.T) {
 	if code, _, _ := c.post("/keys/new", form, "Sec-Fetch-Site", "cross-site"); code != 403 {
 		t.Errorf("cross-site: %d", code)
 	}
+	if code, _, _ := c.post("/keys/new", form, "Sec-Fetch-Site", "same-site", "Origin", "http://other.example.com"); code != 403 {
+		t.Errorf("same-site: %d", code)
+	}
 	if len(ms.keys) != 0 {
 		t.Error("a forged request created a key")
+	}
+}
+
+// Browsers send Origin: null when the referrer policy hides it; the
+// Sec-Fetch-Site header still says the form came from this page.
+func TestSignInFromBrowser(t *testing.T) {
+	c, _ := newAdmin(t)
+	c.signIn("Sec-Fetch-Site", "same-origin", "Origin", "null")
+	if c.csrf == "" {
+		t.Fatal("not signed in")
 	}
 }
 
