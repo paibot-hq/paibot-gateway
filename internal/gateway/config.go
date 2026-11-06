@@ -30,6 +30,9 @@ type UpstreamConfig struct {
 	// TimeoutSeconds bounds the wait for the response headers, not the
 	// whole response, so long streams are not cut off.
 	TimeoutSeconds int `json:"timeout_seconds"`
+	// API is the request format the upstream speaks: "openai" (the
+	// default) or "anthropic" (the Messages API).
+	API string `json:"api"`
 }
 
 // ModelConfig maps a public model name to targets tried in order.
@@ -95,8 +98,11 @@ func (c *Config) applyDefaults() {
 	for name, u := range c.Upstreams {
 		if u.TimeoutSeconds == 0 {
 			u.TimeoutSeconds = defaultTimeout
-			c.Upstreams[name] = u
 		}
+		if u.API == "" {
+			u.API = apiOpenAI
+		}
+		c.Upstreams[name] = u
 	}
 }
 
@@ -125,18 +131,29 @@ func (c *Config) Validate() error {
 		if u.TimeoutSeconds < 0 {
 			errs = append(errs, fmt.Errorf("upstream %q: timeout_seconds must not be negative", name))
 		}
+		if u.API != apiOpenAI && u.API != apiAnthropic {
+			errs = append(errs, fmt.Errorf("upstream %q: api must be %q or %q", name, apiOpenAI, apiAnthropic))
+		}
 	}
 	for name, m := range c.Models {
 		if len(m.Targets) == 0 {
 			errs = append(errs, fmt.Errorf("model %q: at least one target is required", name))
 		}
+		apis := map[string]bool{}
 		for i, t := range m.Targets {
-			if _, ok := c.Upstreams[t.Upstream]; !ok {
+			if u, ok := c.Upstreams[t.Upstream]; !ok {
 				errs = append(errs, fmt.Errorf("model %q: target %d: unknown upstream %q", name, i, t.Upstream))
+			} else {
+				apis[u.API] = true
 			}
 			if t.Model == "" {
 				errs = append(errs, fmt.Errorf("model %q: target %d: model is required", name, i))
 			}
+		}
+		// A request is forwarded as-is, never translated, so every target
+		// of a model must speak the same format.
+		if len(apis) > 1 {
+			errs = append(errs, fmt.Errorf("model %q: targets mix upstreams with different api values", name))
 		}
 	}
 	names := map[string]bool{}

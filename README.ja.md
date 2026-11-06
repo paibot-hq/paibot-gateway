@@ -6,7 +6,7 @@
 vLLMなど自前ホストのLLMの前に置き、仮想キーでの認証、モデルの許可、レート制限、フォールバック、利用の記録を行います。
 
 - **外部依存ゼロ**: Goの標準ライブラリだけで書いています(`go.sum`がありません)
-- **コードが小さい**: 本体は約850行。全部を読んで承認できます
+- **コードが小さい**: 本体は約1,000行。全部を読んで承認できます
 - **プロンプトを記録しない**: ログに残るのは、キーの名前、モデル、トークン数、時間などのメタデータだけです
 
 ## 使い方
@@ -29,7 +29,27 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"chat","messages":[{"role":"user","content":"こんにちは"}]}'
 ```
 
-対応しているエンドポイント: `POST /v1/chat/completions`、`POST /v1/completions`、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`。それ以外は404を返します。
+対応しているエンドポイント: `POST /v1/chat/completions`、`POST /v1/completions`、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`。Anthropic のクライアント向けに `POST /v1/messages` と `POST /v1/messages/count_tokens`。それ以外は404を返します。
+
+### Claude など Anthropic 形式の上流
+
+上流に `"api": "anthropic"` と書き、Anthropic の公式SDKの接続先をPaigateにします。仮想キーは、SDKが送る `x-api-key` でも、`Authorization: Bearer` でも受け付けます。
+
+```json
+"upstreams": {
+  "claude": { "base_url": "https://api.anthropic.com/v1", "api": "anthropic", "api_key_env": "ANTHROPIC_API_KEY" }
+},
+"models": {
+  "sonnet": { "targets": [{ "upstream": "claude", "model": "claude-sonnet-4-5" }] }
+}
+```
+
+```python
+client = anthropic.Anthropic(api_key=PAIGATE_KEY, base_url="http://localhost:8080")
+client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
+```
+
+リクエストは形式を変換せず、そのまま中継します。そのため、Anthropicの新しい機能もPaigateを直さずに使えます。同じ理由で、1つのモデルの転送先はすべて同じ `api` にそろえる必要があります。また、AnthropicのモデルをOpenAIのエンドポイントで呼ぶことはできず、その逆もできません。このエンドポイントのエラーはAnthropicと同じ形で返します。529(混雑)のときは、5xxと同じく次の転送先に進みます。ログの `prompt_tokens` には、OpenAIと同じくキャッシュから読んだ入力も含めます。
 
 ## アーキテクチャ
 
@@ -66,7 +86,7 @@ flowchart LR
 
 | 項目 | 内容 |
 |---|---|
-| `upstreams` | 転送先。`base_url`はhttpかhttpsのみ。上流のAPIキーは`api_key_env`で指定した環境変数から読みます |
+| `upstreams` | 転送先。`base_url`はhttpかhttpsのみ。上流のAPIキーは`api_key_env`で指定した環境変数から読みます。`api`は`openai`(既定)か`anthropic` |
 | `models` | 公開するモデル名と、転送先の一覧。上から順に試し、429と5xx、接続失敗のときだけ次へ進みます |
 | `keys` | 仮想キー。`hash`(SHA-256)だけを置きます。`models`で使えるモデルを限定し、`rpm`で1分あたりの回数を制限します |
 
@@ -76,7 +96,7 @@ flowchart LR
 ## 安全のための設計
 
 - 仮想キーは256ビットの乱数で、ハッシュだけを保存します。照合はハッシュで行うので、比較時間からキーを推測できません
-- クライアントのヘッダーは転送しません(`Accept`だけは例外)。上流には、新しく作ったリクエストに上流用のキーを付けて送ります
+- クライアントのヘッダーは転送しません(例外は`Accept`と、Anthropicの上流への`anthropic-version`と`anthropic-beta`)。上流には、新しく作ったリクエストに上流用のキーを付けて送ります
 - 上流からのリダイレクトはたどりません。内部の別のアドレスへ誘導されるのを防ぎます
 - 環境変数のプロキシ設定は使いません
 - 本文の大きさに上限があります(既定は10MB)。ヘッダーの読み込みにも時間の上限があります
