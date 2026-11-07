@@ -36,6 +36,11 @@ type Config struct {
 	// Timezone decides where calendar months, and so monthly budgets,
 	// begin. An IANA name such as "Asia/Tokyo"; the default is UTC.
 	Timezone string `json:"timezone"`
+	// AllowResponseStorage lets upstreams store Responses API
+	// conversations, so clients can continue one by previous_response_id.
+	// By default Paigate sends "store": false and refuses requests that
+	// need a stored conversation.
+	AllowResponseStorage bool `json:"allow_response_storage"`
 }
 
 // UpstreamConfig is one OpenAI-compatible server, such as a vLLM instance.
