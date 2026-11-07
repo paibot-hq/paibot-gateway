@@ -19,7 +19,7 @@ Most gateways went the other way: hundreds of transitive dependencies, plugin sy
 Paigate goes the other way:
 
 - **Standard library only.** No `go.sum`. Nothing to pin, vendor, or audit beyond Go itself. CI fails if a dependency ever appears.
-- **Small on purpose.** The gateway itself is about 1,300 lines of Go; the optional database layer, PostgreSQL client and admin UI bring the total to about 3,600. You can review all of it before you approve it.
+- **Small on purpose.** The gateway itself is about 1,500 lines of Go; the optional database layer, PostgreSQL client and admin UI bring the total to about 3,800. You can review all of it before you approve it.
 - **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
 - **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
 
@@ -43,7 +43,7 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"chat","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-Endpoints: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz`, and for Anthropic clients `POST /v1/messages` and `POST /v1/messages/count_tokens`. Everything else is a 404.
+Endpoints: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `POST /v1/responses` (plus `/responses/compact` and `/responses/input_tokens`), `GET /v1/models`, `GET /healthz`, and for Anthropic clients `POST /v1/messages` and `POST /v1/messages/count_tokens`. Everything else is a 404.
 
 ### Claude and other Anthropic-format upstreams
 
@@ -64,6 +64,23 @@ client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
 ```
 
 Requests are passed through in their own format, never translated, so new Anthropic features work without changes to Paigate. That is also why a model's targets must all use the same `api`, and why an Anthropic model is refused on the OpenAI endpoints and the other way round. Errors on these endpoints come back in Anthropic's shape, and a 529 (overloaded) moves on to the next target like a 5xx. Logged `prompt_tokens` include cached input, as OpenAI's do.
+
+### Responses API (Codex, Agents SDK)
+
+`POST /v1/responses` goes to the same OpenAI-format upstreams as chat completions: OpenAI itself, or vLLM and Ollama, which serve it too. Point Codex at Paigate with a provider in `~/.codex/config.toml`:
+
+```toml
+model_provider = "paigate"
+model = "chat"
+
+[model_providers.paigate]
+name = "Paigate"
+base_url = "http://localhost:8080/v1"
+env_key = "PAIGATE_KEY"
+wire_api = "responses"
+```
+
+The Responses API stores conversations upstream unless told not to. Paigate tells it not to: it sends `"store": false`, and refuses `"store": true`, `previous_response_id` and `conversation`, which need a stored conversation. Clients then send the whole conversation each time, as Codex does. Set `allow_response_storage` to let upstreams keep them; a request that continues a stored conversation then never falls back to another target, which would not have it. Fetching or deleting a stored response by id is not served, since Paigate cannot tell which upstream holds it.
 
 ### Keys in a database, usage and budgets
 
@@ -123,6 +140,7 @@ Each request goes through four checks in order. The first one that fails ends th
 | [`internal/gateway/config.go`](internal/gateway/config.go) | Strict JSON config loading and validation |
 | [`internal/gateway/keys.go`](internal/gateway/keys.go) | Key generation, hashing, token-bucket limiter |
 | [`internal/gateway/gateway.go`](internal/gateway/gateway.go) | Routing, auth, proxying with fallback, SSE relay, usage logging |
+| [`internal/gateway/responses.go`](internal/gateway/responses.go) | Responses API: conversation storage rule, usage parsing |
 | [`internal/gateway/keystore.go`](internal/gateway/keystore.go) | Database keys in memory, usage batching, budgets |
 | [`internal/store/store.go`](internal/store/store.go) | Tables and queries for keys and hourly usage |
 | [`internal/pg/`](internal/pg/) | PostgreSQL wire protocol: TLS, SCRAM-SHA-256, queries, a small pool |
@@ -142,6 +160,7 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 | `database_url_env` | Optional. The environment variable holding a `postgres://` URL for keys, usage and budgets. |
 | `admin_token_env`, `admin_listen` | Optional. Turn on the admin UI; it needs the database. |
 | `timezone` | Where months begin for budgets and usage reports. Default `UTC`. |
+| `allow_response_storage` | Let upstreams store Responses API conversations. Default `false`. |
 
 ## Security model
 

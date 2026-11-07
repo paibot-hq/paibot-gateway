@@ -1,4 +1,5 @@
-// Package gateway is a small OpenAI- and Anthropic-compatible LLM gateway:
+// Package gateway is a small OpenAI- and Anthropic-compatible LLM gateway
+// (Chat Completions, Responses and Messages APIs):
 // it checks a virtual key, applies the key's model allowlist, rate limit,
 // expiry and budget, forwards the request to the configured upstreams with
 // ordered fallback, and logs metadata about each request. Prompts and
@@ -54,6 +55,8 @@ type state struct {
 	models    map[string][]target
 	modelAPI  map[string]string
 	upstreams map[string]*upstream
+	// allowResponseStorage lets Responses API upstreams keep conversations.
+	allowResponseStorage bool
 }
 
 type virtualKey struct {
@@ -98,6 +101,9 @@ func New(cfg *Config, log *slog.Logger, getenv func(string) string) (*Gateway, e
 	for _, p := range []string{"/chat/completions", "/completions", "/embeddings"} {
 		mux.HandleFunc("POST /v1"+p, g.proxy(apiOpenAI, p))
 	}
+	for _, p := range responsesPaths {
+		mux.HandleFunc("POST /v1"+p, g.proxy(apiOpenAI, p))
+	}
 	for _, p := range []string{"/messages", "/messages/count_tokens"} {
 		mux.HandleFunc("POST /v1"+p, g.proxy(apiAnthropic, p))
 	}
@@ -127,11 +133,12 @@ func (g *Gateway) Reload(cfg *Config) error {
 
 func buildState(cfg *Config, getenv func(string) string, old *state) (*state, error) {
 	st := &state{
-		maxBody:   cfg.MaxBodyBytes,
-		keys:      map[string]*virtualKey{},
-		models:    map[string][]target{},
-		modelAPI:  map[string]string{},
-		upstreams: map[string]*upstream{},
+		maxBody:              cfg.MaxBodyBytes,
+		allowResponseStorage: cfg.AllowResponseStorage,
+		keys:                 map[string]*virtualKey{},
+		models:               map[string][]target{},
+		modelAPI:             map[string]string{},
+		upstreams:            map[string]*upstream{},
 	}
 	for name, uc := range cfg.Upstreams {
 		base, err := url.Parse(uc.BaseURL)
@@ -361,6 +368,19 @@ func (g *Gateway) proxy(api, suffix string) http.HandlerFunc {
 			return
 		}
 		json.Unmarshal(req["stream"], &rec.stream)
+		format := api
+		if slices.Contains(responsesPaths, suffix) {
+			format = formatResponses
+			continues, err := prepareResponses(st.allowResponseStorage, suffix, req)
+			if err != nil {
+				rec.status = http.StatusBadRequest
+				writeAPIError(w, api, rec.status, "invalid_request", err.Error())
+				return
+			}
+			if continues {
+				targets = targets[:1]
+			}
+		}
 
 		for i, t := range targets {
 			rec.attempts++
@@ -389,7 +409,7 @@ func (g *Gateway) proxy(api, suffix string) http.HandlerFunc {
 			}
 			rec.err = ""
 			rec.status = resp.StatusCode
-			rec.usage, err = relay(w, resp, api)
+			rec.usage, err = relay(w, resp, format)
 			if err != nil {
 				// Many SDKs hang up as soon as they read the end of a stream,
 				// before the upstream closes it; that is not a failure.
@@ -455,8 +475,9 @@ func (u *upstream) send(ctx context.Context, suffix string, body []byte, client 
 const maxCapture = 4 << 20
 
 // relay copies the upstream response to the client, flushing as it goes
-// for event streams, and extracts token usage along the way.
-func relay(w http.ResponseWriter, resp *http.Response, api string) (*usage, error) {
+// for event streams, and extracts token usage, read in format, along the
+// way.
+func relay(w http.ResponseWriter, resp *http.Response, format string) (*usage, error) {
 	defer resp.Body.Close()
 	ct := resp.Header.Get("Content-Type")
 	if ct != "" {
@@ -466,7 +487,7 @@ func relay(w http.ResponseWriter, resp *http.Response, api string) (*usage, erro
 
 	if strings.HasPrefix(ct, "text/event-stream") {
 		rc := http.NewResponseController(w)
-		sn := sseUsage{api: api}
+		sn := sseUsage{api: format}
 		buf := make([]byte, 32<<10)
 		for {
 			n, rerr := resp.Body.Read(buf)
@@ -488,20 +509,26 @@ func relay(w http.ResponseWriter, resp *http.Response, api string) (*usage, erro
 		}
 	}
 
-	var capture bytes.Buffer
-	lw := &limitedWriter{w: &capture, n: maxCapture}
+	lw := &limitedWriter{n: maxCapture}
 	if _, err := io.Copy(io.MultiWriter(w, lw), resp.Body); err != nil {
 		return nil, err
 	}
 	if lw.overflow {
-		return nil, nil
+		return tailUsage(format, lw.tail.Bytes()), nil
 	}
-	return parseUsage(api, capture.Bytes()), nil
+	return parseUsage(format, lw.buf.Bytes()), nil
 }
 
 // parseUsage reads token usage from a whole response body.
-func parseUsage(api string, body []byte) *usage {
-	if api == apiAnthropic {
+func parseUsage(format string, body []byte) *usage {
+	switch format {
+	case formatResponses:
+		var ev responsesEvent
+		if json.Unmarshal(body, &ev) != nil {
+			return nil
+		}
+		return ev.usage()
+	case apiAnthropic:
 		var ev anthropicEvent
 		if json.Unmarshal(body, &ev) != nil {
 			return nil
@@ -565,31 +592,35 @@ type anthropicEvent struct {
 	} `json:"message"`
 }
 
+// limitedWriter keeps up to n bytes in buf. Past that it keeps only the
+// tail, where usage still can be found.
 type limitedWriter struct {
-	w        io.Writer
+	buf      bytes.Buffer
 	n        int
 	overflow bool
+	tail     tailBuffer
 }
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
-	if l.overflow {
-		return len(p), nil
+	if !l.overflow && l.buf.Len()+len(p) <= l.n {
+		return l.buf.Write(p)
 	}
-	if len(p) > l.n {
+	if !l.overflow {
 		l.overflow = true
-		return len(p), nil
+		l.tail.Write(l.buf.Bytes())
+		l.buf = bytes.Buffer{}
 	}
-	l.n -= len(p)
-	return l.w.Write(p)
+	return l.tail.Write(p)
 }
 
 // sseUsage watches an event stream for a chunk carrying "usage", which
 // OpenAI-compatible servers send last when asked to.
 type sseUsage struct {
-	api   string
+	api   string         // the usage format
 	anth  anthropicUsage // running totals for Anthropic streams
 	line  []byte
-	skip  bool // current line exceeded maxLine and is being ignored
+	skip  bool       // current line exceeded maxLine; only its tail is kept
+	tail  tailBuffer // end of the current line once skip is set
 	usage *usage
 }
 
@@ -605,18 +636,28 @@ func (s *sseUsage) Write(p []byte) {
 		s.append(p[:i])
 		if !s.skip {
 			s.parse(s.line)
+		} else if s.api != apiAnthropic {
+			// A Responses API stream repeats the whole answer in its last
+			// event, so a long answer makes a long line.
+			if u := tailUsage(s.api, s.tail.Bytes()); u != nil {
+				s.usage = u
+			}
 		}
 		s.line, s.skip = s.line[:0], false
+		s.tail.Reset()
 		p = p[i+1:]
 	}
 }
 
 func (s *sseUsage) append(p []byte) {
 	if s.skip {
+		s.tail.Write(p)
 		return
 	}
 	if len(s.line)+len(p) > maxLine {
 		s.skip = true
+		s.tail.Write(s.line)
+		s.tail.Write(p)
 		return
 	}
 	s.line = append(s.line, p...)
@@ -636,6 +677,15 @@ func (s *sseUsage) parse(line []byte) {
 				s.anth.merge(ev.Message.Usage)
 			}
 			if u := s.anth.usage(); u != nil {
+				s.usage = u
+			}
+		}
+		return
+	}
+	if s.api == formatResponses {
+		var ev responsesEvent
+		if json.Unmarshal(data, &ev) == nil {
+			if u := ev.usage(); u != nil {
 				s.usage = u
 			}
 		}

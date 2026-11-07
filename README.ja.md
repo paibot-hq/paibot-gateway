@@ -6,7 +6,7 @@
 vLLMなど自前ホストのLLMの前に置き、仮想キーでの認証、モデルの許可、レート制限、フォールバック、利用の記録を行います。
 
 - **外部依存ゼロ**: Goの標準ライブラリだけで書いています(`go.sum`がありません)
-- **コードが小さい**: ゲートウェイ本体は約1,300行です。必要なときだけ使うDB、PostgreSQLのクライアント、管理画面を含めても約3,600行です。全部を読んで承認できます
+- **コードが小さい**: ゲートウェイ本体は約1,500行です。必要なときだけ使うDB、PostgreSQLのクライアント、管理画面を含めても約3,800行です。全部を読んで承認できます
 - **プロンプトを記録しない**: ログとDBに残るのは、キーの名前、モデル、トークン数、時間などのメタデータだけです
 
 ## 使い方
@@ -29,7 +29,7 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"chat","messages":[{"role":"user","content":"こんにちは"}]}'
 ```
 
-対応しているエンドポイント: `POST /v1/chat/completions`、`POST /v1/completions`、`POST /v1/embeddings`、`GET /v1/models`、`GET /healthz`。Anthropic のクライアント向けに `POST /v1/messages` と `POST /v1/messages/count_tokens`。それ以外は404を返します。
+対応しているエンドポイント: `POST /v1/chat/completions`、`POST /v1/completions`、`POST /v1/embeddings`、`POST /v1/responses`(と`/responses/compact`、`/responses/input_tokens`)、`GET /v1/models`、`GET /healthz`。Anthropic のクライアント向けに `POST /v1/messages` と `POST /v1/messages/count_tokens`。それ以外は404を返します。
 
 ### Claude など Anthropic 形式の上流
 
@@ -50,6 +50,23 @@ client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
 ```
 
 リクエストは形式を変換せず、そのまま中継します。そのため、Anthropicの新しい機能もPaigateを直さずに使えます。同じ理由で、1つのモデルの転送先はすべて同じ `api` にそろえる必要があります。また、AnthropicのモデルをOpenAIのエンドポイントで呼ぶことはできず、その逆もできません。このエンドポイントのエラーはAnthropicと同じ形で返します。529(混雑)のときは、5xxと同じく次の転送先に進みます。ログの `prompt_tokens` には、OpenAIと同じくキャッシュから読んだ入力も含めます。
+
+### Responses API(Codex、Agents SDK)
+
+`POST /v1/responses`は、chat completionsと同じOpenAI形式の転送先に送ります。OpenAI本体のほか、vLLMやOllamaもこのAPIに対応しています。Codexから使うときは、`~/.codex/config.toml`にPaigateを登録します。
+
+```toml
+model_provider = "paigate"
+model = "chat"
+
+[model_providers.paigate]
+name = "Paigate"
+base_url = "http://localhost:8080/v1"
+env_key = "PAIGATE_KEY"
+wire_api = "responses"
+```
+
+Responses APIは、指定しなければ会話を転送先に保存します。Paigateは保存させません。`"store": false`を付けて送り、保存した会話を前提にする`"store": true`、`previous_response_id`、`conversation`は断ります。クライアントは毎回会話の全体を送ることになります(Codexはもともとそうしています)。保存を許すときは`allow_response_storage`を設定します。その場合、保存した会話の続きのリクエストは、ほかの転送先に切り替えません。切り替え先にはその会話がないためです。保存した返事をIDで取り出したり消したりするエンドポイントは中継しません。どの転送先が持っているか分からないためです。
 
 ### キーをDBに置く、利用量と予算
 
@@ -109,6 +126,7 @@ flowchart LR
 | [`internal/gateway/config.go`](internal/gateway/config.go) | 設定のJSONの読み込みと、厳しめの検査 |
 | [`internal/gateway/keys.go`](internal/gateway/keys.go) | キーの生成とハッシュ、トークンバケットによる制限 |
 | [`internal/gateway/gateway.go`](internal/gateway/gateway.go) | 振り分け、認証、フォールバックつきの転送、SSEの中継、利用の記録 |
+| [`internal/gateway/responses.go`](internal/gateway/responses.go) | Responses API: 会話を保存させないルール、利用量の読み取り |
 | [`internal/gateway/keystore.go`](internal/gateway/keystore.go) | DBのキーをメモリに持つ、利用量のまとめ書き、予算 |
 | [`internal/store/store.go`](internal/store/store.go) | キーと1時間ごとの利用量の表とクエリ |
 | [`internal/pg/`](internal/pg/) | PostgreSQLの通信。TLS、SCRAM-SHA-256、クエリ、小さな接続プール |
@@ -128,6 +146,7 @@ DBなしの場合、状態はメモリの中だけにあります。読み込ん
 | `database_url_env` | 任意。キー、利用量、予算に使う`postgres://`のURLを入れた環境変数の名前 |
 | `admin_token_env`、`admin_listen` | 任意。管理画面を使うときに設定します。DBが必要です |
 | `timezone` | 予算と利用量の集計で、月の区切りに使うタイムゾーン。既定は`UTC` |
+| `allow_response_storage` | Responses APIの会話を転送先に保存させるかどうか。既定は`false` |
 
 設定の書き間違い(知らない項目、存在しない転送先、ハッシュの形式違いなど)は、起動時にエラーになります。
 制限が書き間違いで無効になったまま動く、ということを防ぐためです。
