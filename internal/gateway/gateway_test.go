@@ -316,3 +316,206 @@ func TestGenerateKey(t *testing.T) {
 		t.Error("HashKey output fails validHash")
 	}
 }
+
+// anthropicConfig serves "sonnet" from an Anthropic upstream and "chat"
+// from an OpenAI one, both on the same fake server.
+func anthropicConfig(urls ...string) string {
+	ups, targets := []string{}, []string{}
+	for i, u := range urls {
+		ups = append(ups, fmt.Sprintf(`"claude%d": {"base_url": %q, "api": "anthropic", "api_key_env": "UP_KEY"}`, i, u+"/v1"))
+		targets = append(targets, fmt.Sprintf(`{"upstream": "claude%d", "model": "claude-real-%d"}`, i, i))
+	}
+	return fmt.Sprintf(`{
+		"upstreams": {%s, "oai": {"base_url": %q}},
+		"models": {
+			"sonnet": {"targets": [%s]},
+			"chat": {"targets": [{"upstream": "oai", "model": "real-model"}]}
+		},
+		"keys": [{"name": "team-a", "hash": %q, "models": ["sonnet", "chat"], "rpm": 1000}]
+	}`, strings.Join(ups, ","), urls[0]+"/v1", strings.Join(targets, ","), HashKey(testKey))
+}
+
+type anthropicSeen struct {
+	apiKey, auth, version, beta, path, model string
+}
+
+func fakeAnthropic(t *testing.T, got *anthropicSeen, answer func(w http.ResponseWriter)) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		if got != nil {
+			*got = anthropicSeen{
+				apiKey:  r.Header.Get("X-Api-Key"),
+				auth:    r.Header.Get("Authorization"),
+				version: r.Header.Get("Anthropic-Version"),
+				beta:    r.Header.Get("Anthropic-Beta"),
+				path:    r.URL.Path,
+			}
+			got.model, _ = body["model"].(string)
+		}
+		answer(w)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func anthropicOK(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	io.WriteString(w, `{"type":"message","content":[],"usage":{"input_tokens":10,"cache_creation_input_tokens":null,"cache_read_input_tokens":90,"output_tokens":7}}`)
+}
+
+func doAnthropic(g *Gateway, path, key, body string, header map[string][]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	if key != "" {
+		req.Header.Set("X-Api-Key", key)
+	}
+	for k, vs := range header {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
+	rec := httptest.NewRecorder()
+	g.ServeHTTP(rec, req)
+	return rec
+}
+
+func anthropicErrType(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var e struct {
+		Type  string
+		Error struct{ Type string }
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &e); err != nil || e.Type != "error" {
+		t.Fatalf("not an Anthropic error object: %s", rec.Body)
+	}
+	return e.Error.Type
+}
+
+func TestAnthropicMessages(t *testing.T) {
+	var got anthropicSeen
+	up := fakeAnthropic(t, &got, anthropicOK)
+	var logs bytes.Buffer
+	g := newTestGateway(t, anthropicConfig(up.URL), &logs)
+
+	rec := doAnthropic(g, "/v1/messages", testKey, `{"model":"sonnet","max_tokens":10,"messages":[{"role":"user","content":"top secret prompt"}]}`,
+		map[string][]string{"Anthropic-Version": {"2026-10-21"}, "Anthropic-Beta": {"a-1", "b-2"}, "Cookie": {"session=leak"}})
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	want := anthropicSeen{apiKey: "upstream-secret", version: "2026-10-21", beta: "a-1,b-2", path: "/v1/messages", model: "claude-real-0"}
+	if got != want {
+		t.Errorf("upstream saw %+v, want %+v", got, want)
+	}
+	l := logs.String()
+	if strings.Contains(l, "top secret prompt") || strings.Contains(l, testKey) {
+		t.Errorf("log leaked prompt or key: %s", l)
+	}
+	// Cached input counts as prompt tokens, as it does in OpenAI's usage.
+	if !strings.Contains(l, `"prompt_tokens":100`) || !strings.Contains(l, `"completion_tokens":7`) {
+		t.Errorf("log lacks usage: %s", l)
+	}
+
+	// Without a version header, a default is sent; count_tokens is served too.
+	doAnthropic(g, "/v1/messages/count_tokens", testKey, `{"model":"sonnet","messages":[]}`, nil)
+	if got.version != defaultAnthropicVersion || got.path != "/v1/messages/count_tokens" {
+		t.Errorf("count_tokens: upstream saw %+v", got)
+	}
+
+	// A Bearer key works on this endpoint too.
+	rec = doAnthropic(g, "/v1/messages", "", `{"model":"sonnet"}`, map[string][]string{"Authorization": {"Bearer " + testKey}})
+	if rec.Code != 200 {
+		t.Errorf("bearer key: status %d", rec.Code)
+	}
+}
+
+func TestAnthropicErrors(t *testing.T) {
+	up := fakeAnthropic(t, nil, anthropicOK)
+	g := newTestGateway(t, anthropicConfig(up.URL), nil)
+
+	cases := []struct {
+		path, key, body string
+		status          int
+		errType         string
+	}{
+		{"/v1/messages", "", `{"model":"sonnet"}`, 401, "authentication_error"},
+		{"/v1/messages", "pg_wrong", `{"model":"sonnet"}`, 401, "authentication_error"},
+		{"/v1/messages", testKey, `{"model":"nope"}`, 404, "not_found_error"},
+		{"/v1/messages", testKey, `not json`, 400, "invalid_request_error"},
+		// An OpenAI-format model is not served on the Anthropic endpoint.
+		{"/v1/messages", testKey, `{"model":"chat"}`, 400, "invalid_request_error"},
+	}
+	for _, c := range cases {
+		rec := doAnthropic(g, c.path, c.key, c.body, nil)
+		if rec.Code != c.status || anthropicErrType(t, rec) != c.errType {
+			t.Errorf("%s %s: status %d %s, want %d %s", c.path, c.body, rec.Code, rec.Body, c.status, c.errType)
+		}
+	}
+	// And the reverse: the Anthropic model on an OpenAI endpoint, in OpenAI's shape.
+	rec := do(g, "POST", "/v1/chat/completions", testKey, `{"model":"sonnet"}`)
+	if rec.Code != 400 || errCode(t, rec) != "invalid_request" {
+		t.Errorf("anthropic model on openai endpoint: %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestAnthropicFallbackOnOverloaded(t *testing.T) {
+	overloaded := fakeAnthropic(t, nil, func(w http.ResponseWriter) {
+		w.WriteHeader(529)
+		io.WriteString(w, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)
+	})
+	var got anthropicSeen
+	good := fakeAnthropic(t, &got, anthropicOK)
+	g := newTestGateway(t, anthropicConfig(overloaded.URL, good.URL), nil)
+	rec := doAnthropic(g, "/v1/messages", testKey, `{"model":"sonnet"}`, nil)
+	if rec.Code != 200 || got.model != "claude-real-1" {
+		t.Errorf("status %d, fallback model %q", rec.Code, got.model)
+	}
+}
+
+func TestAnthropicStreaming(t *testing.T) {
+	up := fakeAnthropic(t, nil, func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fl := w.(http.Flusher)
+		for _, ev := range []string{
+			`event: message_start` + "\n" + `data: {"type":"message_start","message":{"id":"m","usage":{"input_tokens":25,"cache_read_input_tokens":5,"output_tokens":1}}}`,
+			`event: ping` + "\n" + `data: {"type": "ping"}`,
+			`event: content_block_delta` + "\n" + `data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"the \"usage\" word"}}`,
+			`event: message_delta` + "\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":15}}`,
+			`event: message_stop` + "\n" + `data: {"type":"message_stop"}`,
+		} {
+			io.WriteString(w, ev+"\n\n")
+			fl.Flush()
+		}
+	})
+	var logs bytes.Buffer
+	g := newTestGateway(t, anthropicConfig(up.URL), &logs)
+	srv := httptest.NewServer(g)
+	defer srv.Close()
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/messages", strings.NewReader(`{"model":"sonnet","stream":true}`))
+	req.Header.Set("X-Api-Key", testKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(b), "message_delta") || !strings.HasSuffix(string(b), "{\"type\":\"message_stop\"}\n\n") {
+		t.Fatalf("stream not relayed intact: %q", b)
+	}
+	srv.Close()
+	if l := logs.String(); !strings.Contains(l, `"prompt_tokens":30`) || !strings.Contains(l, `"completion_tokens":15`) || !strings.Contains(l, `"stream":true`) {
+		t.Errorf("stream usage not logged: %s", l)
+	}
+}
+
+func TestAPIConfigValidation(t *testing.T) {
+	for name, c := range map[string]string{
+		"unknown api": `{"upstreams":{"a":{"base_url":"http://x","api":"grpc"}}}`,
+		"mixed api":   `{"upstreams":{"a":{"base_url":"http://x"},"b":{"base_url":"http://y","api":"anthropic"}},"models":{"m":{"targets":[{"upstream":"a","model":"m"},{"upstream":"b","model":"m"}]}}}`,
+	} {
+		if _, err := ParseConfig([]byte(c)); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
