@@ -14,7 +14,7 @@ zero dependencies   ·   no prompts in logs or the database   ·   one static bi
 
 An AI gateway holds the keys to every model you run, and sees every prompt that passes through. It should be the most boring, most auditable piece of your stack.
 
-Most gateways went the other way: hundreds of transitive dependencies, plugin systems, admin UIs, and dozens of provider integrations. Each one is more code to trust. When that supply chain gets compromised, a gateway is exactly where an attacker wants to be.
+Most gateways went the other way: hundreds of transitive dependencies, plugin systems, and dozens of provider integrations. Each one is more code to trust. When that supply chain gets compromised, a gateway is exactly where an attacker wants to be.
 
 Paigate goes the other way:
 
@@ -22,6 +22,16 @@ Paigate goes the other way:
 - **Small on purpose.** The gateway itself is about 1,500 lines of Go; the optional database layer, PostgreSQL client and admin UI bring the total to about 3,800. You can review all of it before you approve it.
 - **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
 - **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
+
+| | Paigate | LiteLLM proxy |
+|---|---|---|
+| Third-party packages | **0** | 202 |
+| Lines of code | **3,800** (Go) | 965,000 (Python, the `litellm` package alone) |
+| Container image | **12 MB** | 1.3 GB |
+| Memory when idle | **3 MB** | 550 MB |
+| Start to first healthy response | **0.3 s** | 9–11 s |
+
+Measured 2026-11-08 on an M-series Mac with Docker, both serving one model from Ollama with no database: Paigate at this commit, LiteLLM `main-stable` (1.108.0). LiteLLM does far more, including translating between 100+ providers; the table shows what that costs, not which is better.
 
 ## Quick start
 
