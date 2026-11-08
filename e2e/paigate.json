@@ -1,0 +1,12 @@
+{
+  "upstreams": {
+    "ollama": { "base_url": "http://localhost:11434/v1", "timeout_seconds": 600 },
+    "ollama-anthropic": { "base_url": "http://localhost:11434/v1", "api": "anthropic", "timeout_seconds": 600 }
+  },
+  "models": {
+    "chat": { "targets": [{ "upstream": "ollama", "model": "qwen2.5:0.5b" }] },
+    "claude": { "targets": [{ "upstream": "ollama-anthropic", "model": "qwen2.5:0.5b" }] }
+  },
+  "database_url_env": "PAIGATE_DATABASE_URL",
+  "admin_token_env": "PAIGATE_ADMIN_TOKEN"
+}

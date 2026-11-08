@@ -43,3 +43,50 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
       - name: no third-party dependencies
         run: test ! -f go.sum
+
+  # End to end against a real model: Paigate with PostgreSQL in front of
+  # Ollama serving a 0.5B model on the CPU, driven by curl, Codex and
+  # Claude Code. No secrets and no paid APIs are involved.
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+        env:
+          POSTGRES_USER: paigate
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: paigate
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U paigate"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+      ollama:
+        image: ollama/ollama:0.40.14@sha256:ebaef4f4c5d93660e1f25f8ad085a112f51ccfb0e8458073e71793959dba91c9
+        ports: ["11434:11434"]
+    env:
+      PAIGATE_DATABASE_URL: postgres://paigate:ci-only-password@localhost:5432/paigate?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: pull the model
+        run: |
+          for i in $(seq 60); do curl -sf localhost:11434/api/version && break; sleep 1; done
+          curl -sSf localhost:11434/api/pull -d '{"model":"qwen2.5:0.5b","stream":false}'
+      # The clients the tests drive, at fixed versions.
+      - run: npm install -g @openai/codex@0.157.1 @anthropic-ai/claude-code@2.1.318
+      - run: go build -o paigate ./cmd/paigate
+      - run: ./paigate db migrate -config e2e/paigate.json
+      - name: start paigate
+        run: |
+          PAIGATE_ADMIN_TOKEN=$(openssl rand -hex 32) nohup ./paigate serve -config e2e/paigate.json > paigate.log 2>&1 &
+          for i in $(seq 50); do curl -sf localhost:8080/healthz && break; sleep 0.2; done
+      - run: ./e2e/run.sh
+      # Paigate logs metadata only, so its log is safe to show.
+      - if: always()
+        run: cat paigate.log

@@ -86,6 +86,15 @@ client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
 
 リクエストは形式を変換せず、そのまま中継します。そのため、Anthropicの新しい機能もPaigateを直さずに使えます。同じ理由で、1つのモデルの転送先はすべて同じ `api` にそろえる必要があります。また、AnthropicのモデルをOpenAIのエンドポイントで呼ぶことはできず、その逆もできません。このエンドポイントのエラーはAnthropicと同じ形で返します。529(混雑)のときは、5xxと同じく次の転送先に進みます。ログの `prompt_tokens` には、OpenAIと同じくキャッシュから読んだ入力も含めます。
 
+Claude Code も同じように使えます。仮想キーを `ANTHROPIC_AUTH_TOKEN` に、Paigate のモデル名を `ANTHROPIC_MODEL` などに指定します。
+
+```sh
+ANTHROPIC_BASE_URL=http://localhost:8080 ANTHROPIC_AUTH_TOKEN=$PAIGATE_KEY \
+ANTHROPIC_MODEL=sonnet ANTHROPIC_DEFAULT_HAIKU_MODEL=sonnet claude
+```
+
+Anthropic 形式の転送先に自前のモデルを置く場合（vLLM も Ollama も `/v1/messages` に対応しています）は、`CLAUDE_CODE_MAX_OUTPUT_TOKENS` をモデルの扱える長さより小さくしてください。Claude Code は初期設定で3万2千トークンの返事を求めるので、収まらないリクエストを vLLM は断ります。
+
 ### Responses API(Codex、Agents SDK)
 
 `POST /v1/responses`は、chat completionsと同じOpenAI形式の転送先に送ります。OpenAI本体のほか、vLLMやOllamaもこのAPIに対応しています。Codexから使うときは、`~/.codex/config.toml`にPaigateを登録します。
@@ -202,6 +211,10 @@ DBなしの場合、状態はメモリの中だけにあります。読み込ん
 - 金額での上限と、チーム。予算はキーごとのトークン数です
 - SSOでの管理画面へのログインと、複数の管理者
 - TLSの終端(Ingressで行う前提です)
+
+## テスト
+
+`go test ./...` でユニットテストを流します。`PG_TEST_DSN` に PostgreSQL のデータベースを指定すると、DB のテストも流れます。[e2e/run.sh](e2e/run.sh) は、動いている Paigate を本物のモデルにつないで確かめます。チャット、ストリーミング、Responses API と Messages API、予算、キーの無効化、利用量の記録を試したあと、Codex と Claude Code から Paigate 経由で答えさせます。CI では、PR のたびに両方を流します。通しのテストの相手は、0.5B のモデルを動かす Ollama です。
 
 ## ライセンス
 
