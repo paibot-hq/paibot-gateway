@@ -7,26 +7,61 @@
 Paigate sits in front of your self-hosted LLMs (vLLM, SGLang, anything OpenAI-compatible) and does what a gateway should do, and nothing more: it checks virtual keys, enforces per-key model access and rate limits, falls back across upstreams, and records who used what. It never records what they said.
 
 ```
-zero dependencies   ·   ~850 lines   ·   no prompts in logs   ·   one static binary
+zero dependencies   ·   no prompts in logs or the database   ·   one static binary
 ```
 
 ## Why
 
 An AI gateway holds the keys to every model you run, and sees every prompt that passes through. It should be the most boring, most auditable piece of your stack.
 
-Most gateways went the other way: hundreds of transitive dependencies, plugin systems, admin UIs, and dozens of provider integrations. Each one is more code to trust. When that supply chain gets compromised, a gateway is exactly where an attacker wants to be.
+Most gateways went the other way: hundreds of transitive dependencies, plugin systems, and dozens of provider integrations. Each one is more code to trust. When that supply chain gets compromised, a gateway is exactly where an attacker wants to be.
 
 Paigate goes the other way:
 
 - **Standard library only.** No `go.sum`. Nothing to pin, vendor, or audit beyond Go itself. CI fails if a dependency ever appears.
-- **Small on purpose.** The whole gateway is about 850 lines. You can review all of it before you approve it.
+- **Small on purpose.** The gateway itself is about 1,500 lines of Go; the optional database layer, PostgreSQL client and admin UI bring the total to about 3,800. You can review all of it before you approve it.
 - **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
 - **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
 
+| | Paigate | agentgateway | Bifrost | LiteLLM proxy |
+|---|---|---|---|---|
+| Third-party packages | **0** | 816 Rust crates in `Cargo.lock` | 225 Go modules | 202 Python packages |
+| Lines of code | **3,800** | 271,000 Rust + 42,000 TypeScript | 614,000 Go + 203,000 TypeScript | 965,000 (the `litellm` package alone) |
+| Container image | **12 MB** | 102 MB | 293 MB | 1.3 GB |
+| Memory when idle | **3 MB** | 13 MB | 130–215 MB | 550 MB |
+| Start to first response | **0.3 s** | 0.3–0.4 s | 5.5–6.7 s | 9–11 s |
+
+Latency added in front of an upstream that answers instantly, 20,000 requests per run, gateway limited to 2 CPUs:
+
+| Concurrent requests | Upstream alone | Paigate | agentgateway | Bifrost |
+|---|---|---|---|---|
+| 1 | 0.02 ms | **0.08 ms** | 0.14 ms | 0.24 ms |
+| 10 | 0.10 ms | 0.34 ms | 0.34 ms | 1.1 ms |
+| 50 | 0.33 ms | 1.8 ms | **1.6 ms** | 5.6 ms |
+| Requests per second at 50 | | 17,000–22,000 | **26,000** | 6,400–7,500 |
+
+Median latency. Measured 2026-11-08 on an M-series Mac with Docker, each gateway with one virtual key and no database: Paigate at this commit, agentgateway 1.7.0 (Rust) in standalone mode, Bifrost 2.5.0 with request logging off, LiteLLM `main-stable` (1.108.0). The others do far more, including translating between providers, MCP and agent-to-agent traffic, and budgets in money; the tables show what that costs, not which is better.
+
 ## Quick start
 
+### Try it in a minute with Docker
+
+Paigate, PostgreSQL and the admin UI, sending requests to [Ollama](https://ollama.com) on your machine:
+
 ```sh
-go install paibot.app/paigate/cmd/paigate@latest
+ollama pull qwen3:0.6b
+git clone https://github.com/paibot-hq/paigate && cd paigate/examples/quickstart
+echo "PAIGATE_ADMIN_TOKEN=$(openssl rand -hex 32)" > .env
+docker compose up -d --build
+docker compose run --rm cli key create -models chat alice   # prints a key
+```
+
+Call it with that key, then sign in at http://127.0.0.1:8081 with the token in `.env` to see the key and its usage. To use OpenAI or vLLM instead, edit the upstream in [examples/quickstart/paigate.json](examples/quickstart/paigate.json). On Linux, start Ollama with `OLLAMA_HOST=0.0.0.0` so the container can reach it.
+
+### Install
+
+```sh
+go install github.com/paibot-hq/paigate/cmd/paigate@latest
 
 paigate genkey                          # mint a virtual key; hand it out once, keep only the hash
 cp paigate.example.json paigate.json    # paste the hash in
@@ -43,7 +78,76 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"model":"chat","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-Endpoints: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `GET /v1/models`, `GET /healthz`. Everything else is a 404.
+Endpoints: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `POST /v1/responses` (plus `/responses/compact` and `/responses/input_tokens`), `GET /v1/models`, `GET /healthz`, and for Anthropic clients `POST /v1/messages` and `POST /v1/messages/count_tokens`. Everything else is a 404.
+
+### Claude and other Anthropic-format upstreams
+
+Mark the upstream with `"api": "anthropic"` and point the official Anthropic SDK at Paigate. The virtual key can go in `x-api-key`, as the SDK sends it, or in `Authorization: Bearer`.
+
+```json
+"upstreams": {
+  "claude": { "base_url": "https://api.anthropic.com/v1", "api": "anthropic", "api_key_env": "ANTHROPIC_API_KEY" }
+},
+"models": {
+  "sonnet": { "targets": [{ "upstream": "claude", "model": "claude-sonnet-5-5" }] }
+}
+```
+
+```python
+client = anthropic.Anthropic(api_key=PAIGATE_KEY, base_url="http://localhost:8080")
+client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
+```
+
+Requests are passed through in their own format, never translated, so new Anthropic features work without changes to Paigate. That is also why a model's targets must all use the same `api`, and why an Anthropic model is refused on the OpenAI endpoints and the other way round. Errors on these endpoints come back in Anthropic's shape, and a 529 (overloaded) moves on to the next target like a 5xx. Logged `prompt_tokens` include cached input, as OpenAI's do.
+
+### Responses API (Codex, Agents SDK)
+
+`POST /v1/responses` goes to the same OpenAI-format upstreams as chat completions: OpenAI itself, or vLLM and Ollama, which serve it too. Point Codex at Paigate with a provider in `~/.codex/config.toml`:
+
+```toml
+model_provider = "paigate"
+model = "chat"
+
+[model_providers.paigate]
+name = "Paigate"
+base_url = "http://localhost:8080/v1"
+env_key = "PAIGATE_KEY"
+wire_api = "responses"
+```
+
+The Responses API stores conversations upstream unless told not to. Paigate tells it not to: it sends `"store": false`, and refuses `"store": true`, `previous_response_id` and `conversation`, which need a stored conversation. Clients then send the whole conversation each time, as Codex does. Set `allow_response_storage` to let upstreams keep them; a request that continues a stored conversation then never falls back to another target, which would not have it. Fetching or deleting a stored response by id is not served, since Paigate cannot tell which upstream holds it.
+
+### Keys in a database, usage and budgets
+
+Without a database, keys live in the config file and changing them means editing it and sending `SIGHUP` (`kill -HUP <pid>`), which reloads the file without dropping a request. With PostgreSQL, keys can be created and revoked at run time, and Paigate tracks usage and enforces a monthly token budget per key:
+
+```json
+"database_url_env": "PAIGATE_DATABASE_URL",
+"timezone": "Asia/Tokyo"
+```
+
+```sh
+export PAIGATE_DATABASE_URL='postgres://paigate:secret@db.internal/paigate'   # sslmode=verify-full is the default
+paigate db migrate
+paigate key create -name tanaka -owner tanaka@example.com -models chat,sonnet -rpm 60 -budget 2000000 -expires 2027-03-31
+paigate key list
+paigate key revoke -name tanaka
+paigate usage -month 2026-11
+```
+
+The key is printed once and only its hash is stored. Paigate reloads keys every 5 seconds, so a revoked key stops working within that time, and requests never wait on the database: keys are served from memory, and usage is summed in memory and written in batches. If the database goes away, the last keys loaded keep working and usage is written once it is back. `timezone` decides where calendar months, and so budgets, begin.
+
+The database holds keys and one row per key, model and hour with request and token counts. It never holds prompts, responses, or a record of individual requests. The PostgreSQL client is part of Paigate and, like the rest, uses only the standard library: TLS with certificate checks, SCRAM-SHA-256 authentication, parameterized queries.
+
+### Admin UI
+
+Set `admin_token_env` as well and Paigate serves a small web UI for keys and usage, by default on `127.0.0.1:8081`, reachable only from the machine itself (use `ssh -L` or `kubectl port-forward`, or set `admin_listen`). Make the token with `paigate genkey`.
+
+```json
+"admin_token_env": "PAIGATE_ADMIN_TOKEN"
+```
+
+There are no admin accounts or passwords: signing in takes the token. Pages are rendered on the server with a strict Content-Security-Policy, forms are protected against cross-site requests, and failed sign-ins are throttled.
 
 ## Architecture
 
@@ -67,12 +171,17 @@ Each request goes through four checks in order. The first one that fails ends th
 
 | File | Role |
 |---|---|
-| [`cmd/paigate/main.go`](cmd/paigate/main.go) | CLI (`serve`, `check`, `genkey`, `hash`), HTTP server timeouts, graceful shutdown |
+| [`cmd/paigate/main.go`](cmd/paigate/main.go) | CLI, HTTP server timeouts, SIGHUP reload, graceful shutdown |
 | [`internal/gateway/config.go`](internal/gateway/config.go) | Strict JSON config loading and validation |
 | [`internal/gateway/keys.go`](internal/gateway/keys.go) | Key generation, hashing, token-bucket limiter |
 | [`internal/gateway/gateway.go`](internal/gateway/gateway.go) | Routing, auth, proxying with fallback, SSE relay, usage logging |
+| [`internal/gateway/responses.go`](internal/gateway/responses.go) | Responses API: conversation storage rule, usage parsing |
+| [`internal/gateway/keystore.go`](internal/gateway/keystore.go) | Database keys in memory, usage batching, budgets |
+| [`internal/store/store.go`](internal/store/store.go) | Tables and queries for keys and hourly usage |
+| [`internal/pg/`](internal/pg/) | PostgreSQL wire protocol: TLS, SCRAM-SHA-256, queries, a small pool |
+| [`internal/admin/`](internal/admin/) | Admin UI: sign-in, keys, usage |
 
-State lives in memory only: the parsed config and one rate-limit bucket per key. There is no database and no background job: nothing runs outside the request path.
+Without a database, state lives in memory only: the parsed config and one rate-limit bucket per key. With one, a background loop reloads keys and writes usage every 5 seconds; nothing in the request path waits on it.
 
 ## Configuration
 
@@ -80,14 +189,18 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 
 | Field | What it does |
 |---|---|
-| `upstreams` | Where requests go. `base_url` must be http or https with no embedded credentials. Upstream API keys come from the environment variable named in `api_key_env`, never from the file. |
+| `upstreams` | Where requests go. `base_url` must be http or https with no embedded credentials. Upstream API keys come from the environment variable named in `api_key_env`, never from the file. `api` is `openai` (the default) or `anthropic`. |
 | `models` | Public model names mapped to an ordered list of targets. Paigate moves to the next target only on 429, 5xx, or a connection failure, and only to targets you listed. |
 | `keys` | Virtual keys, stored as SHA-256 hashes. `models` limits what each key may call; `rpm` caps requests per minute. |
+| `database_url_env` | Optional. The environment variable holding a `postgres://` URL for keys, usage and budgets. |
+| `admin_token_env`, `admin_listen` | Optional. Turn on the admin UI; it needs the database. |
+| `timezone` | Where months begin for budgets and usage reports. Default `UTC`. |
+| `allow_response_storage` | Let upstreams store Responses API conversations. Default `false`. |
 
 ## Security model
 
 - **Keys.** 256-bit random keys, stored only as hashes. Lookup is by hash, so comparison timing reveals nothing about a guess.
-- **Clean upstream requests.** Every upstream request is built from scratch. The client's `Authorization`, cookies, and forwarding headers are dropped, and only `Accept` passes through. The upstream's own key is attached server-side.
+- **Clean upstream requests.** Every upstream request is built from scratch. The client's credentials, cookies, and forwarding headers are dropped. Only `Accept` passes through, plus `anthropic-version` and `anthropic-beta` to Anthropic upstreams. The upstream's own key is attached server-side.
 - **No redirects.** Upstream redirects are returned as-is, never followed, so an upstream cannot bounce Paigate into your internal network.
 - **No ambient proxies.** `HTTP_PROXY` and friends are ignored.
 - **Bounded input.** Request bodies are size-capped (10 MB by default). Header reads are time-boxed.
@@ -96,9 +209,13 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 
 ## Not yet
 
-- Rate limits are per process. Sharing them across replicas needs Redis.
-- Budgets (token or spend caps) and persisting usage to PostgreSQL.
+- Rate limits are per process. Budgets are shared through the database, but may run over by up to a few seconds of traffic across replicas.
+- Spend caps in money, and teams. Budgets are in tokens, per key.
+- Signing in to the admin UI through SSO, and more than one administrator.
 - TLS termination. Run Paigate behind your ingress.
-- An admin API. To change keys, edit the config and restart.
 
 Small is the feature. Additions will be judged by what they cost to audit.
+
+## License
+
+[Apache License 2.0](LICENSE)

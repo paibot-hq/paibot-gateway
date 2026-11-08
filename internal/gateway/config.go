@@ -7,18 +7,40 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
+	"time"
+	_ "time/tzdata" // so timezones work on images without /usr/share/zoneinfo
 )
 
-// Config is the whole gateway configuration. It is loaded once at startup;
-// secrets never live in it, only the names of environment variables and
-// hashes of virtual keys.
+// Config is the whole gateway configuration. It is loaded at startup and
+// again on SIGHUP; secrets never live in it, only the names of
+// environment variables and hashes of virtual keys.
 type Config struct {
 	Listen       string                    `json:"listen"`
 	MaxBodyBytes int64                     `json:"max_body_bytes"`
 	Upstreams    map[string]UpstreamConfig `json:"upstreams"`
 	Models       map[string]ModelConfig    `json:"models"`
 	Keys         []KeyConfig               `json:"keys"`
+
+	// DatabaseURLEnv names the environment variable holding a
+	// postgres:// URL. With a database, keys can also be created and
+	// revoked at run time, and usage and budgets are tracked.
+	DatabaseURLEnv string `json:"database_url_env"`
+	// AdminTokenEnv names the environment variable holding the admin
+	// token. Setting it turns on the admin UI, which needs a database.
+	AdminTokenEnv string `json:"admin_token_env"`
+	// AdminListen is where the admin UI listens. The default only accepts
+	// connections from the same machine.
+	AdminListen string `json:"admin_listen"`
+	// Timezone decides where calendar months, and so monthly budgets,
+	// begin. An IANA name such as "Asia/Tokyo"; the default is UTC.
+	Timezone string `json:"timezone"`
+	// AllowResponseStorage lets upstreams store Responses API
+	// conversations, so clients can continue one by previous_response_id.
+	// By default Paigate sends "store": false and refuses requests that
+	// need a stored conversation.
+	AllowResponseStorage bool `json:"allow_response_storage"`
 }
 
 // UpstreamConfig is one OpenAI-compatible server, such as a vLLM instance.
@@ -30,6 +52,9 @@ type UpstreamConfig struct {
 	// TimeoutSeconds bounds the wait for the response headers, not the
 	// whole response, so long streams are not cut off.
 	TimeoutSeconds int `json:"timeout_seconds"`
+	// API is the request format the upstream speaks: "openai" (the
+	// default) or "anthropic" (the Messages API).
+	API string `json:"api"`
 }
 
 // ModelConfig maps a public model name to targets tried in order.
@@ -54,6 +79,7 @@ type KeyConfig struct {
 
 const (
 	defaultListen       = ":8080"
+	defaultAdminListen  = "127.0.0.1:8081"
 	defaultMaxBodyBytes = 10 << 20
 	defaultTimeout      = 120
 )
@@ -92,11 +118,20 @@ func (c *Config) applyDefaults() {
 	if c.MaxBodyBytes == 0 {
 		c.MaxBodyBytes = defaultMaxBodyBytes
 	}
+	if c.AdminListen == "" && c.AdminTokenEnv != "" {
+		c.AdminListen = defaultAdminListen
+	}
+	if c.Timezone == "" {
+		c.Timezone = "UTC"
+	}
 	for name, u := range c.Upstreams {
 		if u.TimeoutSeconds == 0 {
 			u.TimeoutSeconds = defaultTimeout
-			c.Upstreams[name] = u
 		}
+		if u.API == "" {
+			u.API = apiOpenAI
+		}
+		c.Upstreams[name] = u
 	}
 }
 
@@ -107,6 +142,15 @@ func (c *Config) Validate() error {
 	}
 	if len(c.Upstreams) == 0 {
 		errs = append(errs, errors.New("at least one upstream is required"))
+	}
+	if c.AdminTokenEnv != "" && c.DatabaseURLEnv == "" {
+		errs = append(errs, errors.New("admin_token_env needs database_url_env: the admin UI manages keys in the database"))
+	}
+	if c.AdminListen != "" && c.AdminTokenEnv == "" {
+		errs = append(errs, errors.New("admin_listen is set but admin_token_env is not"))
+	}
+	if _, err := time.LoadLocation(c.Timezone); err != nil {
+		errs = append(errs, fmt.Errorf("timezone: %w", err))
 	}
 	for name, u := range c.Upstreams {
 		b, err := url.Parse(u.BaseURL)
@@ -125,18 +169,29 @@ func (c *Config) Validate() error {
 		if u.TimeoutSeconds < 0 {
 			errs = append(errs, fmt.Errorf("upstream %q: timeout_seconds must not be negative", name))
 		}
+		if u.API != apiOpenAI && u.API != apiAnthropic {
+			errs = append(errs, fmt.Errorf("upstream %q: api must be %q or %q", name, apiOpenAI, apiAnthropic))
+		}
 	}
 	for name, m := range c.Models {
 		if len(m.Targets) == 0 {
 			errs = append(errs, fmt.Errorf("model %q: at least one target is required", name))
 		}
+		apis := map[string]bool{}
 		for i, t := range m.Targets {
-			if _, ok := c.Upstreams[t.Upstream]; !ok {
+			if u, ok := c.Upstreams[t.Upstream]; !ok {
 				errs = append(errs, fmt.Errorf("model %q: target %d: unknown upstream %q", name, i, t.Upstream))
+			} else {
+				apis[u.API] = true
 			}
 			if t.Model == "" {
 				errs = append(errs, fmt.Errorf("model %q: target %d: model is required", name, i))
 			}
+		}
+		// A request is forwarded as-is, never translated, so every target
+		// of a model must speak the same format.
+		if len(apis) > 1 {
+			errs = append(errs, fmt.Errorf("model %q: targets mix upstreams with different api values", name))
 		}
 	}
 	names := map[string]bool{}
@@ -183,4 +238,23 @@ func validHash(h string) bool {
 		}
 	}
 	return true
+}
+
+// Location is the configured timezone.
+func (c *Config) Location() *time.Location {
+	loc, err := time.LoadLocation(c.Timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+// ModelNames lists the public model names, sorted.
+func (c *Config) ModelNames() []string {
+	names := make([]string, 0, len(c.Models))
+	for n := range c.Models {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	return names
 }
