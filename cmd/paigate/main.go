@@ -18,9 +18,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"paibot.app/paigate/internal/admin"
-	"paibot.app/paigate/internal/gateway"
-	"paibot.app/paigate/internal/store"
+	"github.com/paibot-hq/paigate/internal/admin"
+	"github.com/paibot-hq/paigate/internal/gateway"
+	"github.com/paibot-hq/paigate/internal/store"
 )
 
 const usage = `usage:

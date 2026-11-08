@@ -47,7 +47,7 @@ docker compose run --rm cli key create -models chat alice   # キーが表示さ
 ### インストール
 
 ```sh
-go install paibot.app/paigate/cmd/paigate@latest
+go install github.com/paibot-hq/paigate/cmd/paigate@latest
 
 paigate genkey                 # 仮想キーとハッシュを作る。キーは利用者に一度だけ渡す
 cp paigate.example.json paigate.json   # hash を書き換える
@@ -75,7 +75,7 @@ curl http://localhost:8080/v1/chat/completions \
   "claude": { "base_url": "https://api.anthropic.com/v1", "api": "anthropic", "api_key_env": "ANTHROPIC_API_KEY" }
 },
 "models": {
-  "sonnet": { "targets": [{ "upstream": "claude", "model": "claude-sonnet-4-5" }] }
+  "sonnet": { "targets": [{ "upstream": "claude", "model": "claude-sonnet-5-5" }] }
 }
 ```
 
@@ -202,3 +202,7 @@ DBなしの場合、状態はメモリの中だけにあります。読み込ん
 - 金額での上限と、チーム。予算はキーごとのトークン数です
 - SSOでの管理画面へのログインと、複数の管理者
 - TLSの終端(Ingressで行う前提です)
+
+## ライセンス
+
+[Apache License 2.0](LICENSE)

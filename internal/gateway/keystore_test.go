@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"paibot.app/paigate/internal/store"
+	"github.com/paibot-hq/paigate/internal/store"
 )
 
 type fakeStore struct {
