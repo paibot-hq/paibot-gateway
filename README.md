@@ -100,6 +100,15 @@ client.messages.create(model="sonnet", max_tokens=1024, messages=[...])
 
 Requests are passed through in their own format, never translated, so new Anthropic features work without changes to Paigate. That is also why a model's targets must all use the same `api`, and why an Anthropic model is refused on the OpenAI endpoints and the other way round. Errors on these endpoints come back in Anthropic's shape, and a 529 (overloaded) moves on to the next target like a 5xx. Logged `prompt_tokens` include cached input, as OpenAI's do.
 
+Claude Code works the same way. Give it a virtual key as `ANTHROPIC_AUTH_TOKEN` and a Paigate model name:
+
+```sh
+ANTHROPIC_BASE_URL=http://localhost:8080 ANTHROPIC_AUTH_TOKEN=$PAIGATE_KEY \
+ANTHROPIC_MODEL=sonnet ANTHROPIC_DEFAULT_HAIKU_MODEL=sonnet claude
+```
+
+With a self-hosted model behind the Anthropic upstream (vLLM and Ollama both serve `/v1/messages`), also set `CLAUDE_CODE_MAX_OUTPUT_TOKENS` below the model's context length. Claude Code asks for 32,000 output tokens by default, and vLLM refuses a request that cannot fit.
+
 ### Responses API (Codex, Agents SDK)
 
 `POST /v1/responses` goes to the same OpenAI-format upstreams as chat completions: OpenAI itself, or vLLM and Ollama, which serve it too. Point Codex at Paigate with a provider in `~/.codex/config.toml`:
@@ -215,6 +224,10 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 - TLS termination. Run Paigate behind your ingress.
 
 Small is the feature. Additions will be judged by what they cost to audit.
+
+## Tests
+
+`go test ./...` runs the unit tests; with `PG_TEST_DSN` pointing at a PostgreSQL database, the database tests too. [e2e/run.sh](e2e/run.sh) runs a running Paigate against a real model: chat, streaming, the Responses and Messages APIs, budgets, revocation and usage, then Codex and Claude Code through it. CI runs both on every pull request, the end-to-end tests against Ollama serving a 0.5B model.
 
 ## License
 
