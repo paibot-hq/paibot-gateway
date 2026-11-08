@@ -23,24 +23,24 @@ Paigate goes the other way:
 - **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
 - **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
 
-| | Paigate | Bifrost | LiteLLM proxy |
-|---|---|---|---|
-| Third-party packages | **0** | 225 Go modules | 202 Python packages |
-| Lines of code | **3,800** | 614,000 Go + 203,000 TypeScript | 965,000 (the `litellm` package alone) |
-| Container image | **12 MB** | 293 MB | 1.3 GB |
-| Memory when idle | **3 MB** | 130–215 MB | 550 MB |
-| Start to first response | **0.3 s** | 5.5–6.7 s | 9–11 s |
+| | Paigate | agentgateway | Bifrost | LiteLLM proxy |
+|---|---|---|---|---|
+| Third-party packages | **0** | 816 Rust crates in `Cargo.lock` | 225 Go modules | 202 Python packages |
+| Lines of code | **3,800** | 271,000 Rust + 42,000 TypeScript | 614,000 Go + 203,000 TypeScript | 965,000 (the `litellm` package alone) |
+| Container image | **12 MB** | 102 MB | 293 MB | 1.3 GB |
+| Memory when idle | **3 MB** | 13 MB | 130–215 MB | 550 MB |
+| Start to first response | **0.3 s** | 0.3–0.4 s | 5.5–6.7 s | 9–11 s |
 
 Latency added in front of an upstream that answers instantly, 20,000 requests per run, gateway limited to 2 CPUs:
 
-| Concurrent requests | Upstream alone | Paigate | Bifrost |
-|---|---|---|---|
-| 1 | 0.02 ms | **0.08 ms** | 0.24 ms |
-| 10 | 0.10 ms | **0.35 ms** | 1.1 ms |
-| 50 | 0.31 ms | **1.9 ms** | 5.6 ms |
-| Requests per second at 50 | | **17,000–22,000** | 6,400–7,500 |
+| Concurrent requests | Upstream alone | Paigate | agentgateway | Bifrost |
+|---|---|---|---|---|
+| 1 | 0.02 ms | **0.08 ms** | 0.14 ms | 0.24 ms |
+| 10 | 0.10 ms | 0.34 ms | 0.34 ms | 1.1 ms |
+| 50 | 0.33 ms | 1.8 ms | **1.6 ms** | 5.6 ms |
+| Requests per second at 50 | | 17,000–22,000 | **26,000** | 6,400–7,500 |
 
-Median latency. Measured 2026-11-08 on an M-series Mac with Docker, each gateway with one virtual key and no database: Paigate at this commit, Bifrost 2.5.0 with request logging off, LiteLLM `main-stable` (1.108.0). Both of the others do far more, including translating between providers, budgets in money and teams; the tables show what that costs, not which is better.
+Median latency. Measured 2026-11-08 on an M-series Mac with Docker, each gateway with one virtual key and no database: Paigate at this commit, agentgateway 1.7.0 (Rust) in standalone mode, Bifrost 2.5.0 with request logging off, LiteLLM `main-stable` (1.108.0). The others do far more, including translating between providers, MCP and agent-to-agent traffic, and budgets in money; the tables show what that costs, not which is better.
 
 ## Quick start
 
