@@ -203,6 +203,10 @@ DBなしの場合、状態はメモリの中だけにあります。読み込ん
 - SSOでの管理画面へのログインと、複数の管理者
 - TLSの終端(Ingressで行う前提です)
 
+## テスト
+
+`go test ./...` でユニットテストを流します。`PG_TEST_DSN` に PostgreSQL のデータベースを指定すると、DB のテストも流れます。[e2e/run.sh](e2e/run.sh) は、動いている Paigate を本物のモデルにつないで確かめます。チャット、ストリーミング、Responses API と Messages API、予算、キーの無効化、利用量の記録を試したあと、Codex と Claude Code から Paigate 経由で答えさせます。CI では、PR のたびに両方を流します。通しのテストの相手は、0.5B のモデルを動かす Ollama です。
+
 ## ライセンス
 
 [Apache License 2.0](LICENSE)

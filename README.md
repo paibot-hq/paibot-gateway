@@ -216,6 +216,10 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 
 Small is the feature. Additions will be judged by what they cost to audit.
 
+## Tests
+
+`go test ./...` runs the unit tests; with `PG_TEST_DSN` pointing at a PostgreSQL database, the database tests too. [e2e/run.sh](e2e/run.sh) runs a running Paigate against a real model: chat, streaming, the Responses and Messages APIs, budgets, revocation and usage, then Codex and Claude Code through it. CI runs both on every pull request, the end-to-end tests against Ollama serving a 0.5B model.
+
 ## License
 
 [Apache License 2.0](LICENSE)
