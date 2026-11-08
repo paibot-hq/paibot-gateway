@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"paibot.app/paigate/internal/pg"
+	"github.com/paibot-hq/paigate/internal/pg"
 )
 
 // Key is a virtual key as stored. Only the hash of the key is kept.

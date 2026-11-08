@@ -61,7 +61,7 @@ Call it with that key, then sign in at http://127.0.0.1:8081 with the token in `
 ### Install
 
 ```sh
-go install paibot.app/paigate/cmd/paigate@latest
+go install github.com/paibot-hq/paigate/cmd/paigate@latest
 
 paigate genkey                          # mint a virtual key; hand it out once, keep only the hash
 cp paigate.example.json paigate.json    # paste the hash in
@@ -89,7 +89,7 @@ Mark the upstream with `"api": "anthropic"` and point the official Anthropic SDK
   "claude": { "base_url": "https://api.anthropic.com/v1", "api": "anthropic", "api_key_env": "ANTHROPIC_API_KEY" }
 },
 "models": {
-  "sonnet": { "targets": [{ "upstream": "claude", "model": "claude-sonnet-4-5" }] }
+  "sonnet": { "targets": [{ "upstream": "claude", "model": "claude-sonnet-5-5" }] }
 }
 ```
 
@@ -215,3 +215,7 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 - TLS termination. Run Paigate behind your ingress.
 
 Small is the feature. Additions will be judged by what they cost to audit.
+
+## License
+
+[Apache License 2.0](LICENSE)

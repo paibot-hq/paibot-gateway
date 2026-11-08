@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"paibot.app/paigate/internal/store"
+	"github.com/paibot-hq/paigate/internal/store"
 )
 
 // Store is what the UI needs from the database. *store.Store implements it.
