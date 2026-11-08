@@ -25,6 +25,22 @@ Paigate goes the other way:
 
 ## Quick start
 
+### Try it in a minute with Docker
+
+Paigate, PostgreSQL and the admin UI, sending requests to [Ollama](https://ollama.com) on your machine:
+
+```sh
+ollama pull qwen3:0.6b
+git clone https://github.com/paibot-hq/paigate && cd paigate/examples/quickstart
+echo "PAIGATE_ADMIN_TOKEN=$(openssl rand -hex 32)" > .env
+docker compose up -d --build
+docker compose run --rm cli key create -models chat alice   # prints a key
+```
+
+Call it with that key, then sign in at http://127.0.0.1:8081 with the token in `.env` to see the key and its usage. To use OpenAI or vLLM instead, edit the upstream in [examples/quickstart/paigate.json](examples/quickstart/paigate.json). On Linux, start Ollama with `OLLAMA_HOST=0.0.0.0` so the container can reach it.
+
+### Install
+
 ```sh
 go install paibot.app/paigate/cmd/paigate@latest
 

@@ -11,6 +11,22 @@ vLLMなど自前ホストのLLMの前に置き、仮想キーでの認証、モ�
 
 ## 使い方
 
+### Dockerで1分で試す
+
+Paigate、PostgreSQL、管理画面を起動し、手元の[Ollama](https://ollama.com)にリクエストを送ります。
+
+```sh
+ollama pull qwen3:0.6b
+git clone https://github.com/paibot-hq/paigate && cd paigate/examples/quickstart
+echo "PAIGATE_ADMIN_TOKEN=$(openssl rand -hex 32)" > .env
+docker compose up -d --build
+docker compose run --rm cli key create -models chat alice   # キーが表示されます
+```
+
+表示されたキーで呼び出したあと、http://127.0.0.1:8081 に`.env`のトークンでログインすると、キーと利用量が見られます。OpenAIやvLLMを使うときは、[examples/quickstart/paigate.json](examples/quickstart/paigate.json)の転送先を書き換えてください。Linuxでは、コンテナから届くように`OLLAMA_HOST=0.0.0.0`でOllamaを起動してください。
+
+### インストール
+
 ```sh
 go install paibot.app/paigate/cmd/paigate@latest
 
