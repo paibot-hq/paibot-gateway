@@ -114,13 +114,15 @@ else
   echo "skip  codex: not installed"
 fi
 
+# Claude Code asks for 32,000 output tokens by default, more than a small
+# self-hosted model's whole context; vLLM refuses that, so cap it.
 if command -v claude >/dev/null; then
   home=$(mktemp -d)
   limit=""
   if command -v timeout >/dev/null; then limit="timeout 600"; fi
   out=$(cd "$home" && CLAUDE_CONFIG_DIR="$home" ANTHROPIC_BASE_URL="$GW" ANTHROPIC_AUTH_TOKEN="$K" \
     ANTHROPIC_MODEL=claude ANTHROPIC_DEFAULT_HAIKU_MODEL=claude ANTHROPIC_SMALL_FAST_MODEL=claude \
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096 \
     $limit claude -p "Reply with just the word hello." </dev/null 2>&1) && rc=0 || rc=$?
   check "claude code: answers through Paigate" test "$rc" = 0
   [ "$rc" = 0 ] || echo "$out" | tail -20
