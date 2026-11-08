@@ -28,19 +28,19 @@ Paigate goes the other way:
 | Third-party packages | **0** | 816 Rust crates in `Cargo.lock` | 225 Go modules | 202 Python packages |
 | Lines of code | **3,800** | 271,000 Rust + 42,000 TypeScript | 614,000 Go + 203,000 TypeScript | 965,000 (the `litellm` package alone) |
 | Container image | **12 MB** | 102 MB | 293 MB | 1.3 GB |
-| Memory when idle | **3 MB** | 13 MB | 130–215 MB | 550 MB |
+| Memory when idle | **2 MB** | 11 MB | 140–200 MB | 570 MB |
 | Start to first response | **0.3 s** | 0.3–0.4 s | 5.5–6.7 s | 9–11 s |
 
-Latency added in front of an upstream that answers instantly, 20,000 requests per run, gateway limited to 2 CPUs:
+Median latency through each gateway to an upstream that answers instantly. Two runs at each level, 20,000 requests per run (3,000 for LiteLLM), gateway limited to 2 CPUs:
 
-| Concurrent requests | Upstream alone | Paigate | agentgateway | Bifrost |
+| Concurrent requests | Paigate | agentgateway | Bifrost | LiteLLM proxy |
 |---|---|---|---|---|
-| 1 | 0.02 ms | **0.08 ms** | 0.14 ms | 0.24 ms |
-| 10 | 0.10 ms | 0.34 ms | 0.34 ms | 1.1 ms |
-| 50 | 0.33 ms | 1.8 ms | **1.6 ms** | 5.6 ms |
-| Requests per second at 50 | | 17,000–22,000 | **26,000** | 6,400–7,500 |
+| 1 | **0.08–0.09 ms** | 0.13 ms | 0.22–0.23 ms | 4.2 ms |
+| 10 | 0.32–0.37 ms | 0.32–0.33 ms | 1.1–1.2 ms | 35–37 ms |
+| 50 | 1.7–1.8 ms | **1.6 ms** | 5.7–5.9 ms | 195 ms |
+| Requests per second at 50 | 23,000–24,000 | **26,000–27,000** | 7,200–7,700 | 250 |
 
-Median latency. Measured 2026-11-08 on an M-series Mac with Docker, each gateway with one virtual key and no database: Paigate at this commit, agentgateway 1.7.0 (Rust) in standalone mode, Bifrost 2.5.0 with request logging off, LiteLLM `main-stable` (1.108.0). The others do far more, including translating between providers, MCP and agent-to-agent traffic, and budgets in money; the tables show what that costs, not which is better.
+Measured 2026-11-08 on an M-series Mac with Docker, each gateway with one virtual key and no database: Paigate at this commit, agentgateway 1.7.0 (Rust) in standalone mode, Bifrost 2.5.0 with request logging off, LiteLLM `main-stable` (1.108.0) with its default single worker. The others do far more, including translating between providers, MCP and agent-to-agent traffic, and budgets in money; the tables show what that costs, not which is better.
 
 ## Quick start
 
