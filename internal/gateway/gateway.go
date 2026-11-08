@@ -23,6 +23,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -474,11 +475,18 @@ func (u *upstream) send(ctx context.Context, suffix string, body []byte, client 
 // to read token usage from.
 const maxCapture = 4 << 20
 
+// copyBuffers holds the buffers relay copies through. Allocating one per
+// request made garbage collection, and with it latency spikes, frequent.
+var copyBuffers = sync.Pool{New: func() any { b := make([]byte, 32<<10); return &b }}
+
 // relay copies the upstream response to the client, flushing as it goes
 // for event streams, and extracts token usage, read in format, along the
 // way.
 func relay(w http.ResponseWriter, resp *http.Response, format string) (*usage, error) {
 	defer resp.Body.Close()
+	bp := copyBuffers.Get().(*[]byte)
+	defer copyBuffers.Put(bp)
+	buf := *bp
 	ct := resp.Header.Get("Content-Type")
 	if ct != "" {
 		w.Header().Set("Content-Type", ct)
@@ -488,7 +496,6 @@ func relay(w http.ResponseWriter, resp *http.Response, format string) (*usage, e
 	if strings.HasPrefix(ct, "text/event-stream") {
 		rc := http.NewResponseController(w)
 		sn := sseUsage{api: format}
-		buf := make([]byte, 32<<10)
 		for {
 			n, rerr := resp.Body.Read(buf)
 			if n > 0 {
@@ -510,7 +517,7 @@ func relay(w http.ResponseWriter, resp *http.Response, format string) (*usage, e
 	}
 
 	lw := &limitedWriter{n: maxCapture}
-	if _, err := io.Copy(io.MultiWriter(w, lw), resp.Body); err != nil {
+	if _, err := io.CopyBuffer(io.MultiWriter(w, lw), resp.Body, buf); err != nil {
 		return nil, err
 	}
 	if lw.overflow {
