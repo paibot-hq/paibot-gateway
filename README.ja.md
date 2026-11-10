@@ -1,13 +1,40 @@
+<div align="center">
+
 # Paigate
 
-[English](README.md) | **日本語**
+### 一気に読み切れる大きさの AI ゲートウェイ
+
+仮想キー · モデルの許可 · レート制限 · フォールバック · トークンの予算。プロンプトは一切ディスクに残しません。
+
+<a href="https://github.com/paibot-hq/paigate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/paibot-hq/paigate/actions/workflows/ci.yml/badge.svg"></a>
+<img alt="Go" src="https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white">
+<img alt="Dependencies" src="https://img.shields.io/badge/dependencies-0-2ea043">
+<img alt="Code" src="https://img.shields.io/badge/code-~3.8k%20lines-555">
+<img alt="Image" src="https://img.shields.io/badge/image-12%20MB-555">
+<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+
+[English](README.md) · **日本語**
+
+<br>
+
+| **0** | **約3,800** | **12 MB** | **2 MB** | **0.3秒** |
+|:---:|:---:|:---:|:---:|:---:|
+| 外部のパッケージ | Go の行数 | コンテナイメージ | 待機中のメモリ | 起動から最初の応答まで |
+
+<br>
+
+[使い方](#使い方) · [アーキテクチャ](#アーキテクチャ) · [設定](#設定) · [安全のための設計](#安全のための設計) · [まだないもの](#まだないもの)
+
+</div>
+
+---
 
 小さく、監査しやすい、OpenAI互換のAIゲートウェイです。
 vLLMなど自前ホストのLLMの前に置き、仮想キーでの認証、モデルの許可、レート制限、フォールバック、利用の記録を行います。
 
-- **外部依存ゼロ**: Goの標準ライブラリだけで書いています(`go.sum`がありません)
-- **コードが小さい**: ゲートウェイ本体は約1,500行です。必要なときだけ使うDB、PostgreSQLのクライアント、管理画面を含めても約3,800行です。全部を読んで承認できます
-- **プロンプトを記録しない**: ログとDBに残るのは、キーの名前、モデル、トークン数、時間などのメタデータだけです
+- 📦 **外部依存ゼロ**: Goの標準ライブラリだけで書いています(`go.sum`がありません)
+- 🔍 **コードが小さい**: ゲートウェイ本体は約1,500行です。必要なときだけ使うDB、PostgreSQLのクライアント、管理画面を含めても約3,800行です。全部を読んで承認できます
+- 🙈 **プロンプトを記録しない**: ログとDBに残るのは、キーの名前、モデル、トークン数、時間などのメタデータだけです
 
 | | Paigate | agentgateway | Bifrost | LiteLLM proxy |
 |---|---|---|---|---|
@@ -66,7 +93,9 @@ curl http://localhost:8080/v1/chat/completions \
 
 対応しているエンドポイント: `POST /v1/chat/completions`、`POST /v1/completions`、`POST /v1/embeddings`、`POST /v1/responses`(と`/responses/compact`、`/responses/input_tokens`)、`GET /v1/models`、`GET /healthz`。Anthropic のクライアント向けに `POST /v1/messages` と `POST /v1/messages/count_tokens`。それ以外は404を返します。
 
-### Claude など Anthropic 形式の上流
+<details>
+<summary><b>Claude など Anthropic 形式の上流</b></summary>
+
 
 上流に `"api": "anthropic"` と書き、Anthropic の公式SDKの接続先をPaigateにします。仮想キーは、SDKが送る `x-api-key` でも、`Authorization: Bearer` でも受け付けます。
 
@@ -95,7 +124,11 @@ ANTHROPIC_MODEL=sonnet ANTHROPIC_DEFAULT_HAIKU_MODEL=sonnet claude
 
 Anthropic 形式の転送先に自前のモデルを置く場合（vLLM も Ollama も `/v1/messages` に対応しています）は、`CLAUDE_CODE_MAX_OUTPUT_TOKENS` をモデルの扱える長さより小さくしてください。Claude Code は初期設定で3万2千トークンの返事を求めるので、収まらないリクエストを vLLM は断ります。
 
-### Responses API(Codex、Agents SDK)
+</details>
+
+<details>
+<summary><b>Responses API(Codex、Agents SDK)</b></summary>
+
 
 `POST /v1/responses`は、chat completionsと同じOpenAI形式の転送先に送ります。OpenAI本体のほか、vLLMやOllamaもこのAPIに対応しています。Codexから使うときは、`~/.codex/config.toml`にPaigateを登録します。
 
@@ -112,7 +145,11 @@ wire_api = "responses"
 
 Responses APIは、指定しなければ会話を転送先に保存します。Paigateは保存させません。`"store": false`を付けて送り、保存した会話を前提にする`"store": true`、`previous_response_id`、`conversation`は断ります。クライアントは毎回会話の全体を送ることになります(Codexはもともとそうしています)。保存を許すときは`allow_response_storage`を設定します。その場合、保存した会話の続きのリクエストは、ほかの転送先に切り替えません。切り替え先にはその会話がないためです。保存した返事をIDで取り出したり消したりするエンドポイントは中継しません。どの転送先が持っているか分からないためです。
 
-### キーをDBに置く、利用量と予算
+</details>
+
+<details>
+<summary><b>キーをDBに置く、利用量と予算</b></summary>
+
 
 DBなしの場合、キーは設定ファイルに書きます。キーを変えたら`SIGHUP`(`kill -HUP <pid>`)を送ると、リクエストを止めずに設定を読み直します。PostgreSQLを使うと、動かしたままキーを発行・無効化でき、キーごとの利用量の記録と、月ごとのトークン数の予算が使えます。
 
@@ -134,7 +171,11 @@ paigate usage -month 2026-11
 
 DBに入るのは、キーと、キー×モデル×1時間ごとのリクエスト数とトークン数だけです。プロンプト、応答、1件ずつのリクエストの記録は入りません。PostgreSQLのクライアントもPaigateの一部で、標準ライブラリだけで書いています。TLSでの証明書の確認、SCRAM-SHA-256の認証、パラメータ付きのクエリに対応しています。
 
-### 管理画面
+</details>
+
+<details>
+<summary><b>管理画面</b></summary>
+
 
 `admin_token_env`も設定すると、キーと利用量を扱う小さな管理画面が使えます。既定の待ち受けは`127.0.0.1:8081`で、そのマシンの中からしか開けません(`ssh -L`や`kubectl port-forward`でつなぐか、`admin_listen`を変えます)。トークンは`paigate genkey`で作ってください。
 
@@ -143,6 +184,8 @@ DBに入るのは、キーと、キー×モデル×1時間ごとのリクエス�
 ```
 
 管理者のアカウントやパスワードはなく、トークンでログインします。画面はサーバー側で作り、厳しいContent-Security-Policyを付けています。フォームは別サイトからの送信を防ぎ、ログインの失敗が続くと待たせます。
+
+</details>
 
 ## アーキテクチャ
 
@@ -197,13 +240,15 @@ DBなしの場合、状態はメモリの中だけにあります。読み込ん
 
 ## 安全のための設計
 
-- 仮想キーは256ビットの乱数で、ハッシュだけを保存します。照合はハッシュで行うので、比較時間からキーを推測できません
-- クライアントのヘッダーは転送しません(例外は`Accept`と、Anthropicの上流への`anthropic-version`と`anthropic-beta`)。上流には、新しく作ったリクエストに上流用のキーを付けて送ります
-- 上流からのリダイレクトはたどりません。内部の別のアドレスへ誘導されるのを防ぎます
-- 環境変数のプロキシ設定は使いません
-- 本文の大きさに上限があります(既定は10MB)。ヘッダーの読み込みにも時間の上限があります
-- 存在しないモデルと許可されていないモデルには、同じ404を返します。キーを使って他のモデルを探ることはできません
-- コンテナは、ダイジェストで固定したdistrolessの上で、root以外のユーザーとして動きます。CIのアクションもコミットのSHAで固定しています
+|  |  |
+|:-:|---|
+| 🔑 | 仮想キーは256ビットの乱数で、ハッシュだけを保存します。照合はハッシュで行うので、比較時間からキーを推測できません |
+| 🧼 | クライアントのヘッダーは転送しません(例外は`Accept`と、Anthropicの上流への`anthropic-version`と`anthropic-beta`)。上流には、新しく作ったリクエストに上流用のキーを付けて送ります |
+| ↪️ | 上流からのリダイレクトはたどりません。内部の別のアドレスへ誘導されるのを防ぎます |
+| 🧭 | 環境変数のプロキシ設定は使いません |
+| 📏 | 本文の大きさに上限があります(既定は10MB)。ヘッダーの読み込みにも時間の上限があります |
+| 🙈 | 存在しないモデルと許可されていないモデルには、同じ404を返します。キーを使って他のモデルを探ることはできません |
+| 📦 | コンテナは、ダイジェストで固定したdistrolessの上で、root以外のユーザーとして動きます。CIのアクションもコミットのSHAで固定しています |
 
 ## まだないもの
 
