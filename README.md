@@ -1,14 +1,35 @@
+<div align="center">
+
 # Paigate
 
-**English** | [日本語](README.ja.md)
+### An AI gateway small enough to read in one sitting.
 
-**An AI gateway small enough to read in one sitting.**
+Virtual keys · model allowlists · rate limits · fallback · token budgets — and never a prompt on disk.
+
+<a href="https://github.com/paibot-hq/paigate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/paibot-hq/paigate/actions/workflows/ci.yml/badge.svg"></a>
+<img alt="Go" src="https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white">
+<img alt="Dependencies" src="https://img.shields.io/badge/dependencies-0-2ea043">
+<img alt="Code" src="https://img.shields.io/badge/code-~3.8k%20lines-555">
+<img alt="Image" src="https://img.shields.io/badge/image-12%20MB-555">
+<a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+
+**English** · [日本語](README.ja.md)
+
+<br>
+
+| **0** | **~3,800** | **12 MB** | **2 MB** | **0.3 s** |
+|:---:|:---:|:---:|:---:|:---:|
+| third-party packages | lines of Go | container image | idle memory | start → first response |
+
+<br>
+
+[Quick start](#quick-start) · [Architecture](#architecture) · [Configuration](#configuration) · [Security model](#security-model) · [Not yet](#not-yet)
+
+</div>
+
+---
 
 Paigate sits in front of your self-hosted LLMs (vLLM, SGLang, anything OpenAI-compatible) and does what a gateway should do, and nothing more: it checks virtual keys, enforces per-key model access and rate limits, falls back across upstreams, and records who used what. It never records what they said.
-
-```
-zero dependencies   ·   no prompts in logs or the database   ·   one static binary
-```
 
 ## Why
 
@@ -18,10 +39,10 @@ Most gateways went the other way: hundreds of transitive dependencies, plugin sy
 
 Paigate goes the other way:
 
-- **Standard library only.** No `go.sum`. Nothing to pin, vendor, or audit beyond Go itself. CI fails if a dependency ever appears.
-- **Small on purpose.** The gateway itself is about 1,500 lines of Go; the optional database layer, PostgreSQL client and admin UI bring the total to about 3,800. You can review all of it before you approve it.
-- **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
-- **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
+- 📦 **Standard library only.** No `go.sum`. Nothing to pin, vendor, or audit beyond Go itself. CI fails if a dependency ever appears.
+- 🔍 **Small on purpose.** The gateway itself is about 1,500 lines of Go; the optional database layer, PostgreSQL client and admin UI bring the total to about 3,800. You can review all of it before you approve it.
+- 🙈 **Metadata, not content.** Logs carry key name, model, upstream, status, token counts and latency. Prompts and completions never touch disk.
+- 🚨 **Fails loud.** Unknown config fields, dangling references, malformed hashes, and missing secrets all stop startup. A typo never silently disables a limit.
 
 | | Paigate | agentgateway | Bifrost | LiteLLM proxy |
 |---|---|---|---|---|
@@ -80,7 +101,9 @@ curl http://localhost:8080/v1/chat/completions \
 
 Endpoints: `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings`, `POST /v1/responses` (plus `/responses/compact` and `/responses/input_tokens`), `GET /v1/models`, `GET /healthz`, and for Anthropic clients `POST /v1/messages` and `POST /v1/messages/count_tokens`. Everything else is a 404.
 
-### Claude and other Anthropic-format upstreams
+<details>
+<summary><b>Claude and other Anthropic-format upstreams</b></summary>
+
 
 Mark the upstream with `"api": "anthropic"` and point the official Anthropic SDK at Paigate. The virtual key can go in `x-api-key`, as the SDK sends it, or in `Authorization: Bearer`.
 
@@ -109,7 +132,11 @@ ANTHROPIC_MODEL=sonnet ANTHROPIC_DEFAULT_HAIKU_MODEL=sonnet claude
 
 With a self-hosted model behind the Anthropic upstream (vLLM and Ollama both serve `/v1/messages`), also set `CLAUDE_CODE_MAX_OUTPUT_TOKENS` below the model's context length. Claude Code asks for 32,000 output tokens by default, and vLLM refuses a request that cannot fit.
 
-### Responses API (Codex, Agents SDK)
+</details>
+
+<details>
+<summary><b>Responses API (Codex, Agents SDK)</b></summary>
+
 
 `POST /v1/responses` goes to the same OpenAI-format upstreams as chat completions: OpenAI itself, or vLLM and Ollama, which serve it too. Point Codex at Paigate with a provider in `~/.codex/config.toml`:
 
@@ -126,7 +153,11 @@ wire_api = "responses"
 
 The Responses API stores conversations upstream unless told not to. Paigate tells it not to: it sends `"store": false`, and refuses `"store": true`, `previous_response_id` and `conversation`, which need a stored conversation. Clients then send the whole conversation each time, as Codex does. Set `allow_response_storage` to let upstreams keep them; a request that continues a stored conversation then never falls back to another target, which would not have it. Fetching or deleting a stored response by id is not served, since Paigate cannot tell which upstream holds it.
 
-### Keys in a database, usage and budgets
+</details>
+
+<details>
+<summary><b>Keys in a database, usage and budgets</b></summary>
+
 
 Without a database, keys live in the config file and changing them means editing it and sending `SIGHUP` (`kill -HUP <pid>`), which reloads the file without dropping a request. With PostgreSQL, keys can be created and revoked at run time, and Paigate tracks usage and enforces a monthly token budget per key:
 
@@ -148,7 +179,11 @@ The key is printed once and only its hash is stored. Paigate reloads keys every 
 
 The database holds keys and one row per key, model and hour with request and token counts. It never holds prompts, responses, or a record of individual requests. The PostgreSQL client is part of Paigate and, like the rest, uses only the standard library: TLS with certificate checks, SCRAM-SHA-256 authentication, parameterized queries.
 
-### Admin UI
+</details>
+
+<details>
+<summary><b>Admin UI</b></summary>
+
 
 Set `admin_token_env` as well and Paigate serves a small web UI for keys and usage, by default on `127.0.0.1:8081`, reachable only from the machine itself (use `ssh -L` or `kubectl port-forward`, or set `admin_listen`). Make the token with `paigate genkey`.
 
@@ -157,6 +192,8 @@ Set `admin_token_env` as well and Paigate serves a small web UI for keys and usa
 ```
 
 There are no admin accounts or passwords: signing in takes the token. Pages are rendered on the server with a strict Content-Security-Policy, forms are protected against cross-site requests, and failed sign-ins are throttled.
+
+</details>
 
 ## Architecture
 
@@ -208,13 +245,15 @@ One JSON file. See [paigate.example.json](paigate.example.json).
 
 ## Security model
 
-- **Keys.** 256-bit random keys, stored only as hashes. Lookup is by hash, so comparison timing reveals nothing about a guess.
-- **Clean upstream requests.** Every upstream request is built from scratch. The client's credentials, cookies, and forwarding headers are dropped. Only `Accept` passes through, plus `anthropic-version` and `anthropic-beta` to Anthropic upstreams. The upstream's own key is attached server-side.
-- **No redirects.** Upstream redirects are returned as-is, never followed, so an upstream cannot bounce Paigate into your internal network.
-- **No ambient proxies.** `HTTP_PROXY` and friends are ignored.
-- **Bounded input.** Request bodies are size-capped (10 MB by default). Header reads are time-boxed.
-- **No model discovery.** A model that doesn't exist and a model the key can't use return the same 404.
-- **Hardened delivery.** Distroless, non-root container with base images pinned by digest. CI actions are pinned by commit SHA, run with read-only permissions, and get no secrets.
+|  |  |  |
+|:-:|---|---|
+| 🔑 | **Keys** | 256-bit random keys, stored only as hashes. Lookup is by hash, so comparison timing reveals nothing about a guess. |
+| 🧼 | **Clean upstream requests** | Every upstream request is built from scratch. The client's credentials, cookies, and forwarding headers are dropped. Only `Accept` passes through, plus `anthropic-version` and `anthropic-beta` to Anthropic upstreams. The upstream's own key is attached server-side. |
+| ↪️ | **No redirects** | Upstream redirects are returned as-is, never followed, so an upstream cannot bounce Paigate into your internal network. |
+| 🧭 | **No ambient proxies** | `HTTP_PROXY` and friends are ignored. |
+| 📏 | **Bounded input** | Request bodies are size-capped (10 MB by default). Header reads are time-boxed. |
+| 🙈 | **No model discovery** | A model that doesn't exist and a model the key can't use return the same 404. |
+| 📦 | **Hardened delivery** | Distroless, non-root container with base images pinned by digest. CI actions are pinned by commit SHA, run with read-only permissions, and get no secrets. |
 
 ## Not yet
 
