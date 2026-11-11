@@ -84,8 +84,8 @@ Call it with that key, then sign in at http://127.0.0.1:8081 with the token in `
 ```sh
 go install github.com/paibot-hq/paibot-gateway/cmd/paibot-gateway@latest
 
-paibot-gateway genkey                          # mint a virtual key; hand it out once, keep only the hash
-cp paibot-gateway.example.json paibot-gateway.json    # paste the hash in
+paibot-gateway genkey                                # mint a virtual key; hand it out once, keep only the hash
+cp paibot-gateway.example.json paibot-gateway.json   # paste the hash in
 paibot-gateway check -config paibot-gateway.json
 paibot-gateway serve -config paibot-gateway.json
 ```

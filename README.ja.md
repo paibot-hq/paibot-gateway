@@ -76,7 +76,7 @@ docker compose run --rm cli key create -models chat alice   # キーが表示さ
 ```sh
 go install github.com/paibot-hq/paibot-gateway/cmd/paibot-gateway@latest
 
-paibot-gateway genkey                 # 仮想キーとハッシュを作る。キーは利用者に一度だけ渡す
+paibot-gateway genkey                                # 仮想キーとハッシュを作る。キーは利用者に一度だけ渡す
 cp paibot-gateway.example.json paibot-gateway.json   # hash を書き換える
 paibot-gateway check -config paibot-gateway.json
 paibot-gateway serve -config paibot-gateway.json
