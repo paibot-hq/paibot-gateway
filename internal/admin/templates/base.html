@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{template "title" .}} · Paigate</title>
+<title>{{template "title" .}} · Paibot Gateway</title>
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/app.js" defer></script>
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>Paigate <small>admin</small></a>
+  <a class="brand" href="/"><span class="mark" aria-hidden="true"></span>Paibot Gateway <small>admin</small></a>
   {{if .SignedIn}}
   <nav>
     <a href="/"{{if or (eq .Page "keys") (eq .Page "key_form") (eq .Page "key_created")}} aria-current="page"{{end}}>Keys</a>

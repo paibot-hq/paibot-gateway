@@ -30,7 +30,7 @@ type Config struct {
 	// TLS is nil only when the URL says sslmode=disable.
 	TLS            *tls.Config
 	ConnectTimeout time.Duration
-	// ApplicationName shows in pg_stat_activity; "paigate" if empty.
+	// ApplicationName shows in pg_stat_activity; "paibot-gateway" if empty.
 	ApplicationName string
 }
 
@@ -182,7 +182,7 @@ func handshake(ctx context.Context, nc net.Conn, cfg *Config) (*Conn, error) {
 	b.int32(196608)
 	app := cfg.ApplicationName
 	if app == "" {
-		app = "paigate"
+		app = "paibot-gateway"
 	}
 	for _, kv := range [][2]string{{"user", cfg.User}, {"database", cfg.Database}, {"application_name", app}, {"client_encoding", "UTF8"}} {
 		b.cstring(kv[0])

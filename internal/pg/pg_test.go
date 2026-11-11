@@ -51,11 +51,11 @@ func TestSCRAMRejectsWeakChallenges(t *testing.T) {
 }
 
 func TestParseURL(t *testing.T) {
-	c, err := ParseURL("postgres://app:p%40ss@db.internal:6543/paigate?sslmode=verify-full")
+	c, err := ParseURL("postgres://app:p%40ss@db.internal:6543/paibot_gateway?sslmode=verify-full")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Host != "db.internal" || c.Port != "6543" || c.User != "app" || c.Password != "p@ss" || c.Database != "paigate" || c.TLS == nil || c.TLS.ServerName != "db.internal" {
+	if c.Host != "db.internal" || c.Port != "6543" || c.User != "app" || c.Password != "p@ss" || c.Database != "paibot_gateway" || c.TLS == nil || c.TLS.ServerName != "db.internal" {
 		t.Errorf("parsed %+v", c)
 	}
 	c, _ = ParseURL("postgres://app@localhost")
@@ -275,7 +275,7 @@ func TestPool(t *testing.T) {
 		t.Skip("PG_TEST_DSN not set")
 	}
 	cfg, _ := ParseURL(dsn)
-	cfg.ApplicationName = "paigate-pool-test"
+	cfg.ApplicationName = "paibot-gateway-pool-test"
 	p := NewPool(cfg, 3)
 	defer p.Close()
 	ctx := context.Background()

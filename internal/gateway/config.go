@@ -38,7 +38,7 @@ type Config struct {
 	Timezone string `json:"timezone"`
 	// AllowResponseStorage lets upstreams store Responses API
 	// conversations, so clients can continue one by previous_response_id.
-	// By default Paigate sends "store": false and refuses requests that
+	// By default Paibot Gateway sends "store": false and refuses requests that
 	// need a stored conversation.
 	AllowResponseStorage bool `json:"allow_response_storage"`
 }

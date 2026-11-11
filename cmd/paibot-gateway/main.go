@@ -1,4 +1,4 @@
-// Command paigate runs the gateway and manages virtual keys.
+// Command paibot-gateway runs the gateway and manages virtual keys.
 package main
 
 import (
@@ -18,24 +18,24 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/paibot-hq/paigate/internal/admin"
-	"github.com/paibot-hq/paigate/internal/gateway"
-	"github.com/paibot-hq/paigate/internal/store"
+	"github.com/paibot-hq/paibot-gateway/internal/admin"
+	"github.com/paibot-hq/paibot-gateway/internal/gateway"
+	"github.com/paibot-hq/paibot-gateway/internal/store"
 )
 
 const usage = `usage:
-  paigate serve  [-config paigate.json]   run the gateway (SIGHUP reloads the config)
-  paigate check  [-config paigate.json]   validate the config and exit
-  paigate genkey                          print a new virtual key and its hash
-  paigate hash                            read a key from stdin and print its hash
+  paibot-gateway serve  [-config paibot-gateway.json]   run the gateway (SIGHUP reloads the config)
+  paibot-gateway check  [-config paibot-gateway.json]   validate the config and exit
+  paibot-gateway genkey                          print a new virtual key and its hash
+  paibot-gateway hash                            read a key from stdin and print its hash
 
 With "database_url_env" in the config:
-  paigate db migrate                      create or update the database tables
-  paigate key create -name N -models a,b [-owner O] [-rpm N] [-budget TOKENS] [-expires YYYY-MM-DD]
-  paigate key list
-  paigate key update -name N [-models a,b] [-owner O] [-rpm N] [-budget TOKENS] [-expires YYYY-MM-DD|never]
-  paigate key revoke -name N
-  paigate usage [-month YYYY-MM]
+  paibot-gateway db migrate                      create or update the database tables
+  paibot-gateway key create -name N -models a,b [-owner O] [-rpm N] [-budget TOKENS] [-expires YYYY-MM-DD]
+  paibot-gateway key list
+  paibot-gateway key update -name N [-models a,b] [-owner O] [-rpm N] [-budget TOKENS] [-expires YYYY-MM-DD|never]
+  paibot-gateway key revoke -name N
+  paibot-gateway usage [-month YYYY-MM]
 
 Every command takes -config. Put flags before other arguments.
 `
@@ -75,14 +75,14 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "paigate:", err)
+		fmt.Fprintln(os.Stderr, "paibot-gateway:", err)
 		os.Exit(1)
 	}
 }
 
 func newFlags(name string) (*flag.FlagSet, *string) {
 	fs := flag.NewFlagSet(name, flag.ExitOnError)
-	path := fs.String("config", "paigate.json", "path to the JSON config")
+	path := fs.String("config", "paibot-gateway.json", "path to the JSON config")
 	return fs, path
 }
 

@@ -1,50 +1,50 @@
-# Paigate with PostgreSQL, for trying it out on one machine. Requests go
+# Paibot Gateway with PostgreSQL, for trying it out on one machine. Requests go
 # to Ollama running on this machine (ollama pull qwen3:0.6b); edit
-# paigate.json to use another upstream. The database password is fixed
+# paibot-gateway.json to use another upstream. The database password is fixed
 # and nothing listens beyond localhost; do not run it like this in
 # production.
 #
-#   echo "PAIGATE_ADMIN_TOKEN=$(openssl rand -hex 32)" > .env
+#   echo "PAIBOT_GATEWAY_ADMIN_TOKEN=$(openssl rand -hex 32)" > .env
 #   docker compose up -d --build
 #
 # Then sign in at http://127.0.0.1:8081 with that token.
-name: paigate-quickstart
+name: paibot-gateway-quickstart
 
-x-database-url: &database-url postgres://paigate:paigate@postgres:5432/paigate?sslmode=disable
+x-database-url: &database-url postgres://paibot_gateway:paibot_gateway@postgres:5432/paibot_gateway?sslmode=disable
 
 services:
   postgres:
     image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
     environment:
-      POSTGRES_USER: paigate
-      POSTGRES_PASSWORD: paigate
-      POSTGRES_DB: paigate
+      POSTGRES_USER: paibot_gateway
+      POSTGRES_PASSWORD: paibot_gateway
+      POSTGRES_DB: paibot_gateway
     volumes: [pgdata:/var/lib/postgresql]
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "paigate"]
+      test: ["CMD", "pg_isready", "-U", "paibot_gateway"]
       interval: 2s
       retries: 30
 
-  # The paigate command line. On "up" it creates the tables and exits; use
+  # The paibot-gateway command line. On "up" it creates the tables and exits; use
   # it for other commands with: docker compose run --rm cli key list
   cli:
     build: ../..
-    image: paigate:quickstart
-    entrypoint: ["/paigate"]
+    image: paibot-gateway:quickstart
+    entrypoint: ["/paibot-gateway"]
     command: ["db", "migrate"]
-    working_dir: /etc/paigate
+    working_dir: /etc/paibot-gateway
     environment:
-      PAIGATE_DATABASE_URL: *database-url
-    volumes: ["./paigate.json:/etc/paigate/paigate.json:ro"]
+      PAIBOT_GATEWAY_DATABASE_URL: *database-url
+    volumes: ["./paibot-gateway.json:/etc/paibot-gateway/paibot-gateway.json:ro"]
     depends_on:
       postgres: { condition: service_healthy }
 
-  paigate:
-    image: paigate:quickstart
+  paibot-gateway:
+    image: paibot-gateway:quickstart
     environment:
-      PAIGATE_DATABASE_URL: *database-url
-      PAIGATE_ADMIN_TOKEN: ${PAIGATE_ADMIN_TOKEN:?put PAIGATE_ADMIN_TOKEN in .env first; see the top of compose.yaml}
-    volumes: ["./paigate.json:/etc/paigate/paigate.json:ro"]
+      PAIBOT_GATEWAY_DATABASE_URL: *database-url
+      PAIBOT_GATEWAY_ADMIN_TOKEN: ${PAIBOT_GATEWAY_ADMIN_TOKEN:?put PAIBOT_GATEWAY_ADMIN_TOKEN in .env first; see the top of compose.yaml}
+    volumes: ["./paibot-gateway.json:/etc/paibot-gateway/paibot-gateway.json:ro"]
     extra_hosts: ["host.docker.internal:host-gateway"] # Ollama on this machine
     ports:
       - "127.0.0.1:8080:8080" # the gateway

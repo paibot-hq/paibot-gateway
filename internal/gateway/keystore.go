@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/paibot-hq/paigate/internal/store"
+	"github.com/paibot-hq/paibot-gateway/internal/store"
 )
 
 // KeyStore is the database behind run-time keys and usage. *store.Store

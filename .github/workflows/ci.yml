@@ -18,15 +18,15 @@ jobs:
       postgres:
         image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
         env:
-          POSTGRES_USER: paigate
+          POSTGRES_USER: paibot_gateway
           POSTGRES_PASSWORD: ci-only-password
-          POSTGRES_DB: paigate
+          POSTGRES_DB: paibot_gateway
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U paigate"
+          --health-cmd "pg_isready -U paibot_gateway"
           --health-interval 2s --health-timeout 5s --health-retries 30
     env:
-      PG_TEST_DSN: postgres://paigate:ci-only-password@localhost:5432/paigate?sslmode=disable
+      PG_TEST_DSN: postgres://paibot_gateway:ci-only-password@localhost:5432/paibot_gateway?sslmode=disable
     steps:
       # Actions are pinned by commit SHA, not by tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -44,7 +44,7 @@ jobs:
       - name: no third-party dependencies
         run: test ! -f go.sum
 
-  # End to end against a real model: Paigate with PostgreSQL in front of
+  # End to end against a real model: Paibot Gateway with PostgreSQL in front of
   # Ollama serving a 0.5B model on the CPU, driven by curl, Codex and
   # Claude Code. No secrets and no paid APIs are involved.
   e2e:
@@ -54,18 +54,18 @@ jobs:
       postgres:
         image: postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
         env:
-          POSTGRES_USER: paigate
+          POSTGRES_USER: paibot_gateway
           POSTGRES_PASSWORD: ci-only-password
-          POSTGRES_DB: paigate
+          POSTGRES_DB: paibot_gateway
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U paigate"
+          --health-cmd "pg_isready -U paibot_gateway"
           --health-interval 2s --health-timeout 5s --health-retries 30
       ollama:
         image: ollama/ollama:0.40.14@sha256:ebaef4f4c5d93660e1f25f8ad085a112f51ccfb0e8458073e71793959dba91c9
         ports: ["11434:11434"]
     env:
-      PAIGATE_DATABASE_URL: postgres://paigate:ci-only-password@localhost:5432/paigate?sslmode=disable
+      PAIBOT_GATEWAY_DATABASE_URL: postgres://paibot_gateway:ci-only-password@localhost:5432/paibot_gateway?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -80,13 +80,13 @@ jobs:
           curl -sSf localhost:11434/api/pull -d '{"model":"qwen2.5:0.5b","stream":false}'
       # The clients the tests drive, at fixed versions.
       - run: npm install -g @openai/codex@0.157.1 @anthropic-ai/claude-code@2.1.318
-      - run: go build -o paigate ./cmd/paigate
-      - run: ./paigate db migrate -config e2e/paigate.json
-      - name: start paigate
+      - run: go build -o paibot-gateway ./cmd/paibot-gateway
+      - run: ./paibot-gateway db migrate -config e2e/paibot-gateway.json
+      - name: start paibot-gateway
         run: |
-          PAIGATE_ADMIN_TOKEN=$(openssl rand -hex 32) nohup ./paigate serve -config e2e/paigate.json > paigate.log 2>&1 &
+          PAIBOT_GATEWAY_ADMIN_TOKEN=$(openssl rand -hex 32) nohup ./paibot-gateway serve -config e2e/paibot-gateway.json > paibot-gateway.log 2>&1 &
           for i in $(seq 50); do curl -sf localhost:8080/healthz && break; sleep 0.2; done
       - run: ./e2e/run.sh
-      # Paigate logs metadata only, so its log is safe to show.
+      # Paibot Gateway logs metadata only, so its log is safe to show.
       - if: always()
-        run: cat paigate.log
+        run: cat paibot-gateway.log
