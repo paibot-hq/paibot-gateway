@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# End-to-end tests against a running Paigate in front of a real model.
+# End-to-end tests against a running Paibot Gateway in front of a real model.
 #
-# Expects Paigate serving e2e/paigate.json on $GW with its database
-# migrated, and Ollama serving qwen2.5:0.5b behind it. $PAIGATE is how to
-# run the paigate command (default ./paigate). Codex and Claude Code are
+# Expects Paibot Gateway serving e2e/paibot-gateway.json on $GW with its database
+# migrated, and Ollama serving qwen2.5:0.5b behind it. $PAIBOT_GATEWAY is how to
+# run the paibot-gateway command (default ./paibot-gateway). Codex and Claude Code are
 # tried when they are installed.
 set -euo pipefail
 
 GW=${GW:-http://127.0.0.1:8080}
-PAIGATE=${PAIGATE:-./paigate}
-CONFIG=${CONFIG:-e2e/paigate.json}
+PAIBOT_GATEWAY=${PAIBOT_GATEWAY:-./paibot-gateway}
+CONFIG=${CONFIG:-e2e/paibot-gateway.json}
 SYNC=6 # keys and usage reach the database within 5 s
 
 failures=0
@@ -21,7 +21,7 @@ check() { # name, command...
   if "$@" >/dev/null 2>&1; then ok "$name"; else bad "$name"; fi
 }
 
-newkey() { $PAIGATE key create -config "$CONFIG" "$@" | grep -o 'pg_[A-Za-z0-9_-]*'; }
+newkey() { $PAIBOT_GATEWAY key create -config "$CONFIG" "$@" | grep -o 'pg_[A-Za-z0-9_-]*'; }
 
 # post PATH KEY BODY [curl args]: sets $status and $r to the response.
 post() {
@@ -91,24 +91,24 @@ check "budget: says why" jq -e '.error.code == "insufficient_quota"' <<<"$r"
 # Revocation reaches the gateway within the sync interval.
 post /v1/chat/completions "$T" "{\"model\":\"chat\",$say}"
 check "revoke: key works before" test "$status" = 200
-$PAIGATE key revoke -config "$CONFIG" "carol-$suffix" >/dev/null
+$PAIBOT_GATEWAY key revoke -config "$CONFIG" "carol-$suffix" >/dev/null
 sleep $SYNC
 post /v1/chat/completions "$T" "{\"model\":\"chat\",$say}"
 check "revoke: key refused after" test "$status" = 401
 
 # Usage lands in the database, as totals only.
 sleep $SYNC
-u=$($PAIGATE usage -config "$CONFIG")
+u=$($PAIBOT_GATEWAY usage -config "$CONFIG")
 check "usage: recorded for alice" grep -q "alice-$suffix" <<<"$u"
 
 # Real clients, when installed.
 if command -v codex >/dev/null; then
   home=$(mktemp -d)
-  out=$(cd "$home" && CODEX_HOME="$home" PAIGATE_KEY="$K" codex exec --skip-git-repo-check --sandbox read-only \
-    -c model_provider=paigate \
-    -c "model_providers.paigate={name=\"Paigate\",base_url=\"$GW/v1\",env_key=\"PAIGATE_KEY\",wire_api=\"responses\"}" \
+  out=$(cd "$home" && CODEX_HOME="$home" PAIBOT_GATEWAY_KEY="$K" codex exec --skip-git-repo-check --sandbox read-only \
+    -c model_provider=paibot-gateway \
+    -c "model_providers.paibot-gateway={name=\"Paibot Gateway\",base_url=\"$GW/v1\",env_key=\"PAIBOT_GATEWAY_KEY\",wire_api=\"responses\"}" \
     -m chat "Reply with just the word hello." </dev/null 2>&1) && rc=0 || rc=$?
-  check "codex: answers through Paigate" test "$rc" = 0
+  check "codex: answers through Paibot Gateway" test "$rc" = 0
   [ "$rc" = 0 ] || echo "$out" | tail -20
 else
   echo "skip  codex: not installed"
@@ -124,7 +124,7 @@ if command -v claude >/dev/null; then
     ANTHROPIC_MODEL=claude ANTHROPIC_DEFAULT_HAIKU_MODEL=claude ANTHROPIC_SMALL_FAST_MODEL=claude \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_MAX_OUTPUT_TOKENS=4096 \
     $limit claude -p "Reply with just the word hello." </dev/null 2>&1) && rc=0 || rc=$?
-  check "claude code: answers through Paigate" test "$rc" = 0
+  check "claude code: answers through Paibot Gateway" test "$rc" = 0
   [ "$rc" = 0 ] || echo "$out" | tail -20
 else
   echo "skip  claude code: not installed"

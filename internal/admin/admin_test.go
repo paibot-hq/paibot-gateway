@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/paibot-hq/paigate/internal/store"
+	"github.com/paibot-hq/paibot-gateway/internal/store"
 )
 
 const adminToken = "test-admin-token-0123456789abcdefghij"

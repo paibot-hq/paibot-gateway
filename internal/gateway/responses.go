@@ -11,13 +11,13 @@ import (
 // and go to OpenAI-format upstreams.
 const formatResponses = "responses"
 
-// responsesPaths are the Responses API endpoints Paigate serves. Each one
+// responsesPaths are the Responses API endpoints Paibot Gateway serves. Each one
 // names its model in the body. Endpoints that look up a stored response
 // by id (GET and DELETE /responses/{id}, input_items, cancel) are not
-// served: Paigate cannot tell which upstream holds the response.
+// served: Paibot Gateway cannot tell which upstream holds the response.
 var responsesPaths = []string{"/responses", "/responses/compact", "/responses/input_tokens"}
 
-// prepareResponses applies Paigate's rule for the Responses API: unless
+// prepareResponses applies Paibot Gateway's rule for the Responses API: unless
 // the config allows it, upstreams must not keep conversations. It then
 // sets "store": false on /responses, and refuses requests that build on
 // a stored conversation. It reports whether the request continues a

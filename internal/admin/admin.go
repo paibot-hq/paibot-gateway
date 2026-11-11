@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/paibot-hq/paigate/internal/store"
+	"github.com/paibot-hq/paibot-gateway/internal/store"
 )
 
 // Store is what the UI needs from the database. *store.Store implements it.
@@ -52,7 +52,7 @@ type Options struct {
 }
 
 const (
-	cookieName    = "paigate_admin"
+	cookieName    = "paibot_gateway_admin"
 	sessionTTL    = 12 * time.Hour
 	minTokenChars = 32
 )
@@ -81,7 +81,7 @@ var files embed.FS
 
 func New(o Options) (*Server, error) {
 	if len(o.Token) < minTokenChars {
-		return nil, fmt.Errorf("the admin token must be at least %d characters; `paigate genkey` makes a suitable one", minTokenChars)
+		return nil, fmt.Errorf("the admin token must be at least %d characters; `paibot-gateway genkey` makes a suitable one", minTokenChars)
 	}
 	s := &Server{o: o, tokenHash: sha256.Sum256([]byte(o.Token)), sessions: map[string]*session{}, now: time.Now, failTokens: 5}
 	funcs := template.FuncMap{

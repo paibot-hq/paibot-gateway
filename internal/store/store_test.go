@@ -21,7 +21,7 @@ func openTest(t *testing.T) *Store {
 	}
 	t.Cleanup(s.Close)
 	ctx := context.Background()
-	if _, err := s.pool.Exec(ctx, "DROP TABLE IF EXISTS paigate_usage, paigate_keys, paigate_schema_migrations"); err != nil {
+	if _, err := s.pool.Exec(ctx, "DROP TABLE IF EXISTS paibot_gateway_usage, paibot_gateway_keys, paibot_gateway_schema_migrations, paigate_usage, paigate_keys, paigate_schema_migrations"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Migrate(ctx); err != nil {
@@ -39,6 +39,34 @@ func TestMigrateIsIdempotent(t *testing.T) {
 		if err := s.Migrate(context.Background()); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// A database made under the old name keeps its keys and usage.
+func TestMigrateRenamesPaigateTables(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	if _, err := s.CreateKey(ctx, "tanaka", hashA, KeySettings{Models: []string{"chat"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		"ALTER TABLE paibot_gateway_schema_migrations RENAME TO paigate_schema_migrations",
+		"ALTER TABLE paibot_gateway_keys RENAME TO paigate_keys",
+		"ALTER TABLE paibot_gateway_usage RENAME TO paigate_usage",
+	} {
+		if _, err := s.pool.Exec(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := s.Keys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0].Name != "tanaka" {
+		t.Fatalf("keys after the rename: %+v", keys)
 	}
 }
 

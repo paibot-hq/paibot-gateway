@@ -7,6 +7,6 @@
     "chat": { "targets": [{ "upstream": "ollama", "model": "qwen2.5:0.5b" }] },
     "claude": { "targets": [{ "upstream": "ollama-anthropic", "model": "qwen2.5:0.5b" }] }
   },
-  "database_url_env": "PAIGATE_DATABASE_URL",
-  "admin_token_env": "PAIGATE_ADMIN_TOKEN"
+  "database_url_env": "PAIBOT_GATEWAY_DATABASE_URL",
+  "admin_token_env": "PAIBOT_GATEWAY_ADMIN_TOKEN"
 }

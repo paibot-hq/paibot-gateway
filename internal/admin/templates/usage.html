@@ -23,7 +23,7 @@
   <tfoot><tr><td colspan="2">All keys</td><td class="num">{{comma .Total.Requests}}</td><td class="num">{{comma .Total.PromptTokens}}</td><td class="num">{{comma .Total.CompletionTokens}}</td><td class="num">{{comma .Total.Total}}</td></tr></tfoot>
 </table>
 </div>
-<p class="muted small">Totals cover keys stored in the database. Paigate records counts per key, model and hour, never prompts or responses.</p>
+<p class="muted small">Totals cover keys stored in the database. Paibot Gateway records counts per key, model and hour, never prompts or responses.</p>
 {{else}}
 <section class="card empty"><h2>No usage in {{.Month}}</h2><p class="muted">Requests made with database keys show up here within a few seconds.</p></section>
 {{end}}

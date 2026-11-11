@@ -263,7 +263,7 @@ func (g *Gateway) listModels(w http.ResponseWriter, r *http.Request) {
 	data := []model{}
 	for m := range k.models {
 		if st.models[m] != nil { // a database key may name a model since removed
-			data = append(data, model{ID: m, Object: "model", OwnedBy: "paigate"})
+			data = append(data, model{ID: m, Object: "model", OwnedBy: "paibot-gateway"})
 		}
 	}
 	slices.SortFunc(data, func(a, b model) int { return strings.Compare(a.ID, b.ID) })

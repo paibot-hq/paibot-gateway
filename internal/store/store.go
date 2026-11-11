@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/paibot-hq/paigate/internal/pg"
+	"github.com/paibot-hq/paibot-gateway/internal/pg"
 )
 
 // Key is a virtual key as stored. Only the hash of the key is kept.
@@ -118,7 +118,7 @@ func (s *Store) Close() { s.pool.Close() }
 
 var migrations = []string{
 	// 1: keys and hourly usage.
-	`CREATE TABLE paigate_keys (
+	`CREATE TABLE paibot_gateway_keys (
 		id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
 		name text NOT NULL UNIQUE,
 		owner text NOT NULL DEFAULT '',
@@ -130,8 +130,8 @@ var migrations = []string{
 		revoked_at timestamptz,
 		created_at timestamptz NOT NULL DEFAULT now()
 	);
-	CREATE TABLE paigate_usage (
-		key_id bigint NOT NULL REFERENCES paigate_keys,
+	CREATE TABLE paibot_gateway_usage (
+		key_id bigint NOT NULL REFERENCES paibot_gateway_keys,
 		model text NOT NULL,
 		hour timestamptz NOT NULL,
 		requests bigint NOT NULL DEFAULT 0,
@@ -140,6 +140,14 @@ var migrations = []string{
 		PRIMARY KEY (key_id, model, hour)
 	);`,
 }
+
+const renameFromPaigate = `DO $$BEGIN
+	IF to_regclass('paigate_schema_migrations') IS NOT NULL AND to_regclass('paibot_gateway_schema_migrations') IS NULL THEN
+		ALTER TABLE paigate_schema_migrations RENAME TO paibot_gateway_schema_migrations;
+		ALTER TABLE IF EXISTS paigate_keys RENAME TO paibot_gateway_keys;
+		ALTER TABLE IF EXISTS paigate_usage RENAME TO paibot_gateway_usage;
+	END IF;
+END$$`
 
 // Migrate brings the schema up to date. It is safe to run from several
 // processes at once: they take turns under an advisory lock.
@@ -160,19 +168,24 @@ func (s *Store) Migrate(ctx context.Context) (err error) {
 	if _, err := c.Exec(ctx, "SELECT pg_advisory_xact_lock(7268697320706169)"); err != nil {
 		return err
 	}
-	if _, err := c.Exec(ctx, `CREATE TABLE IF NOT EXISTS paigate_schema_migrations (
+	// The project was called Paigate and its tables paigate_*; a database
+	// made then takes the new names, data and all, before anything else.
+	if _, err := c.Exec(ctx, renameFromPaigate); err != nil {
+		return fmt.Errorf("renaming the paigate_* tables: %w", err)
+	}
+	if _, err := c.Exec(ctx, `CREATE TABLE IF NOT EXISTS paibot_gateway_schema_migrations (
 		version integer PRIMARY KEY,
 		applied_at timestamptz NOT NULL DEFAULT now()
 	)`); err != nil {
 		return err
 	}
-	rows, err := c.Query(ctx, "SELECT coalesce(max(version), 0) FROM paigate_schema_migrations")
+	rows, err := c.Query(ctx, "SELECT coalesce(max(version), 0) FROM paibot_gateway_schema_migrations")
 	if err != nil {
 		return err
 	}
 	current, _ := strconv.Atoi(*rows.Values[0][0])
 	if current > len(migrations) {
-		return fmt.Errorf("the database schema is version %d, newer than this paigate knows (%d); upgrade paigate", current, len(migrations))
+		return fmt.Errorf("the database schema is version %d, newer than this paibot-gateway knows (%d); upgrade paibot-gateway", current, len(migrations))
 	}
 	for v := current + 1; v <= len(migrations); v++ {
 		// The extended protocol runs one statement at a time.
@@ -184,7 +197,7 @@ func (s *Store) Migrate(ctx context.Context) (err error) {
 				return fmt.Errorf("migration %d: %w", v, err)
 			}
 		}
-		if _, err := c.Exec(ctx, "INSERT INTO paigate_schema_migrations (version) VALUES ($1)", v); err != nil {
+		if _, err := c.Exec(ctx, "INSERT INTO paibot_gateway_schema_migrations (version) VALUES ($1)", v); err != nil {
 			return err
 		}
 	}
@@ -230,7 +243,7 @@ func scanKey(r []*string) (Key, error) {
 }
 
 func (s *Store) keys(ctx context.Context, where string, args ...any) ([]Key, error) {
-	rows, err := s.pool.Query(ctx, "SELECT "+keyColumns+" FROM paigate_keys "+where+" ORDER BY name", args...)
+	rows, err := s.pool.Query(ctx, "SELECT "+keyColumns+" FROM paibot_gateway_keys "+where+" ORDER BY name", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -289,7 +302,7 @@ func (s *Store) CreateKey(ctx context.Context, name, hash string, set KeySetting
 		return Key{}, err
 	}
 	models, _ := json.Marshal(set.Models)
-	_, err := s.pool.Exec(ctx, `INSERT INTO paigate_keys (name, owner, hash, models, rpm, monthly_token_budget, expires_at)
+	_, err := s.pool.Exec(ctx, `INSERT INTO paibot_gateway_keys (name, owner, hash, models, rpm, monthly_token_budget, expires_at)
 		VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7)`,
 		name, set.Owner, hash, string(models), set.RPM, budget(set.MonthlyTokenBudget), nullable(set.ExpiresAt))
 	var pe *pg.Error
@@ -308,7 +321,7 @@ func (s *Store) UpdateKey(ctx context.Context, name string, set KeySettings) err
 		return err
 	}
 	models, _ := json.Marshal(set.Models)
-	tag, err := s.pool.Exec(ctx, `UPDATE paigate_keys
+	tag, err := s.pool.Exec(ctx, `UPDATE paibot_gateway_keys
 		SET owner = $2, models = $3::jsonb, rpm = $4, monthly_token_budget = $5, expires_at = $6
 		WHERE name = $1 AND revoked_at IS NULL`,
 		name, set.Owner, string(models), set.RPM, budget(set.MonthlyTokenBudget), nullable(set.ExpiresAt))
@@ -323,7 +336,7 @@ func (s *Store) UpdateKey(ctx context.Context, name string, set KeySettings) err
 
 // RevokeKey stops a key for good. Its usage history is kept.
 func (s *Store) RevokeKey(ctx context.Context, name string) error {
-	tag, err := s.pool.Exec(ctx, "UPDATE paigate_keys SET revoked_at = now() WHERE name = $1 AND revoked_at IS NULL", name)
+	tag, err := s.pool.Exec(ctx, "UPDATE paibot_gateway_keys SET revoked_at = now() WHERE name = $1 AND revoked_at IS NULL", name)
 	if err != nil {
 		return err
 	}
@@ -339,7 +352,7 @@ func (s *Store) AddUsage(ctx context.Context, rows []UsageRow) error {
 	for len(rows) > 0 {
 		n := min(len(rows), 1000)
 		var sb strings.Builder
-		sb.WriteString("INSERT INTO paigate_usage (key_id, model, hour, requests, prompt_tokens, completion_tokens) VALUES ")
+		sb.WriteString("INSERT INTO paibot_gateway_usage (key_id, model, hour, requests, prompt_tokens, completion_tokens) VALUES ")
 		args := make([]any, 0, n*6)
 		for i, r := range rows[:n] {
 			if i > 0 {
@@ -350,9 +363,9 @@ func (s *Store) AddUsage(ctx context.Context, rows []UsageRow) error {
 			args = append(args, r.KeyID, r.Model, r.Hour, r.Requests, r.PromptTokens, r.CompletionTokens)
 		}
 		sb.WriteString(` ON CONFLICT (key_id, model, hour) DO UPDATE SET
-			requests = paigate_usage.requests + EXCLUDED.requests,
-			prompt_tokens = paigate_usage.prompt_tokens + EXCLUDED.prompt_tokens,
-			completion_tokens = paigate_usage.completion_tokens + EXCLUDED.completion_tokens`)
+			requests = paibot_gateway_usage.requests + EXCLUDED.requests,
+			prompt_tokens = paibot_gateway_usage.prompt_tokens + EXCLUDED.prompt_tokens,
+			completion_tokens = paibot_gateway_usage.completion_tokens + EXCLUDED.completion_tokens`)
 		if _, err := s.pool.Exec(ctx, sb.String(), args...); err != nil {
 			return err
 		}
@@ -364,7 +377,7 @@ func (s *Store) AddUsage(ctx context.Context, rows []UsageRow) error {
 // TokensSince returns prompt plus completion tokens per key id since t.
 func (s *Store) TokensSince(ctx context.Context, t time.Time) (map[int64]int64, error) {
 	rows, err := s.pool.Query(ctx, `SELECT key_id, sum(prompt_tokens + completion_tokens)::bigint
-		FROM paigate_usage WHERE hour >= $1 GROUP BY key_id`, t)
+		FROM paibot_gateway_usage WHERE hour >= $1 GROUP BY key_id`, t)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +394,7 @@ func (s *Store) TokensSince(ctx context.Context, t time.Time) (map[int64]int64, 
 func (s *Store) Report(ctx context.Context, from, to time.Time) ([]ReportRow, error) {
 	rows, err := s.pool.Query(ctx, `SELECT k.name, k.owner, u.model,
 			sum(u.requests)::bigint, sum(u.prompt_tokens)::bigint, sum(u.completion_tokens)::bigint
-		FROM paigate_usage u JOIN paigate_keys k ON k.id = u.key_id
+		FROM paibot_gateway_usage u JOIN paibot_gateway_keys k ON k.id = u.key_id
 		WHERE u.hour >= $1 AND u.hour < $2
 		GROUP BY k.name, k.owner, u.model ORDER BY k.name, u.model`, from, to)
 	if err != nil {
